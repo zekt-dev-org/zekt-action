@@ -8,20 +8,20 @@ branding:
 
 inputs:
   zekt_run_id:
-    description: 'GitHub workflow run ID (use ${{ github.run_id }})'
+    description: 'GitHub workflow run ID'
     required: true
 
   zekt_step_id:
-    description: 'Unique step identifier for multiple actions in same workflow (use ${{ github.job }}-${{ github.action }})'
+    description: 'Unique step identifier for multiple actions in same workflow'
     required: false
-    default: 'default'
+    default: 'default-step'
 
   zekt_payload:
     description: 'Custom JSON payload to send to consumers (max 512 KB)'
     required: true
 
   github_token:
-    description: 'GitHub token for authentication (use ${{ secrets.GITHUB_TOKEN }})'
+    description: 'GitHub token for authentication'
     required: true
 
 outputs:
