@@ -1,0 +1,86 @@
+name: Integration Test
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+
+jobs:
+  test-action:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Test action with valid payload
+        id: test_valid
+        uses: ./
+        with:
+          zekt_run_id: ${{ github.run_id }}
+          zekt_step_id: integration-test-valid
+          zekt_payload: |
+            {
+              "test_type": "integration",
+              "repository": "${{ github.repository }}",
+              "workflow": "Integration Test",
+              "run_number": ${{ github.run_number }}
+            }
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Verify success output
+        run: |
+          if [ "${{ steps.test_valid.outputs.success }}" != "true" ]; then
+            echo "Error: Action did not succeed"
+            echo "Error message: ${{ steps.test_valid.outputs.error_message }}"
+            exit 1
+          fi
+          echo "✅ Action succeeded"
+          echo "Run ID: ${{ steps.test_valid.outputs.run_id }}"
+          echo "Step ID: ${{ steps.test_valid.outputs.step_id }}"
+      
+      - name: Test with default step_id
+        id: test_default
+        uses: ./
+        with:
+          zekt_run_id: ${{ github.run_id }}
+          zekt_payload: '{"test_type": "default_step_id", "message": "Using default step ID"}'
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Test with multiple steps
+        id: test_multi_1
+        uses: ./
+        with:
+          zekt_run_id: ${{ github.run_id }}
+          zekt_step_id: multi-step-1
+          zekt_payload: '{"step": 1, "message": "First step"}'
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Test with multiple steps (2)
+        id: test_multi_2
+        uses: ./
+        with:
+          zekt_run_id: ${{ github.run_id }}
+          zekt_step_id: multi-step-2
+          zekt_payload: '{"step": 2, "message": "Second step"}'
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Test with invalid JSON (should fail)
+        id: test_invalid
+        uses: ./
+        with:
+          zekt_run_id: ${{ github.run_id }}
+          zekt_step_id: integration-test-invalid
+          zekt_payload: '{invalid json}'
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+      
+      - name: Verify invalid JSON test failed as expected
+        run: |
+          if [ "${{ steps.test_invalid.outputs.success }}" == "true" ]; then
+            echo "Error: Invalid JSON test should have failed"
+            exit 1
+          fi
+          echo "✅ Invalid JSON test failed as expected"
+          echo "Error: ${{ steps.test_invalid.outputs.error_message }}"

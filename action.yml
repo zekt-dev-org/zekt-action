@@ -1,0 +1,47 @@
+name: 'Zekt Event Publisher'
+description: 'Send custom event payloads to Zekt orchestration platform'
+author: 'zekt-dev-org'
+
+branding:
+  icon: 'send'
+  color: 'blue'
+
+inputs:
+  zekt_run_id:
+    description: 'GitHub workflow run ID (use ${{ github.run_id }})'
+    required: true
+
+  zekt_step_id:
+    description: 'Unique step identifier for multiple actions in same workflow (use ${{ github.job }}-${{ github.action }})'
+    required: false
+    default: 'default'
+
+  zekt_payload:
+    description: 'Custom JSON payload to send to consumers (max 512 KB)'
+    required: true
+
+  zekt_api_url:
+    description: 'Zekt API endpoint (override for testing)'
+    required: false
+    default: 'https://api.zekt.dev/api/zekt/register-run'
+
+  github_token:
+    description: 'GitHub token for authentication (use ${{ secrets.GITHUB_TOKEN }})'
+    required: true
+
+outputs:
+  success:
+    description: 'Whether the payload was successfully registered (true/false)'
+
+  run_id:
+    description: 'The workflow run ID that was registered'
+
+  step_id:
+    description: 'The step ID that was registered'
+
+  error_message:
+    description: 'Error message if registration failed (empty on success)'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
