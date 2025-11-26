@@ -11,6 +11,15 @@ import { sendToZekt } from '../src/api-client';
 jest.mock('@actions/core');
 jest.mock('@actions/github');
 jest.mock('../src/api-client');
+jest.mock('../src/config', () => ({
+  getConfig: jest.fn(() => ({
+    zektApiUrl: 'https://api.zekt.dev',
+    maxPayloadSizeBytes: 512 * 1024,
+    payloadSizeWarningThresholdBytes: 400 * 1024,
+    maxRetries: 3,
+    retryDelayMs: 1000,
+  })),
+}));
 
 describe('Run Function', () => {
   const mockGetInput = core.getInput as jest.MockedFunction<typeof core.getInput>;
@@ -36,13 +45,12 @@ describe('Run Function', () => {
       configurable: true,
     });
 
-    // Default input mocks
+    // Default input mocks (no zekt_api_url needed)
     mockGetInput.mockImplementation((name: string) => {
       const inputs: Record<string, string> = {
         zekt_run_id: '12345',
         zekt_step_id: 'test-step',
         zekt_payload: '{"test": true, "value": 42}',
-        zekt_api_url: 'https://api.zekt.dev/api/zekt/register-run',
         github_token: 'ghp_test123456',
       };
       return inputs[name] || '';
@@ -60,7 +68,6 @@ describe('Run Function', () => {
     await run();
 
     expect(mockSendToZekt).toHaveBeenCalledWith(
-      'https://api.zekt.dev/api/zekt/register-run',
       expect.objectContaining({
         zekt_run_id: 12345,
         zekt_step_id: 'test-step',
@@ -70,9 +77,7 @@ describe('Run Function', () => {
           workflow: 'CI Pipeline',
         }),
       }),
-      'ghp_test123456',
-      'test-owner/test-repo',
-      12345
+      'ghp_test123456'
     );
 
     expect(mockSetOutput).toHaveBeenCalledWith('success', 'true');
@@ -89,9 +94,7 @@ describe('Run Function', () => {
         ? '12345'
         : name === 'zekt_payload'
           ? '{"test": true}'
-          : name === 'github_token'
-            ? 'token'
-            : 'https://api.zekt.dev/api/zekt/register-run';
+          : 'token';
     });
 
     mockSendToZekt.mockResolvedValueOnce({ success: true });
@@ -99,13 +102,10 @@ describe('Run Function', () => {
     await run();
 
     expect(mockSendToZekt).toHaveBeenCalledWith(
-      expect.any(String),
       expect.objectContaining({
         zekt_step_id: 'default',
       }),
-      expect.any(String),
-      expect.any(String),
-      expect.any(Number)
+      expect.any(String)
     );
   });
 
@@ -114,9 +114,7 @@ describe('Run Function', () => {
       if (name === 'zekt_payload') return '{invalid json}';
       return name === 'zekt_run_id'
         ? '12345'
-        : name === 'github_token'
-          ? 'token'
-          : 'https://api.zekt.dev/api/zekt/register-run';
+        : 'token';
     });
 
     await run();
@@ -135,9 +133,7 @@ describe('Run Function', () => {
       if (name === 'zekt_payload') return largePayload;
       return name === 'zekt_run_id'
         ? '12345'
-        : name === 'github_token'
-          ? 'token'
-          : 'https://api.zekt.dev/api/zekt/register-run';
+        : 'token';
     });
 
     await run();
@@ -179,7 +175,6 @@ describe('Run Function', () => {
     await run();
 
     expect(mockSendToZekt).toHaveBeenCalledWith(
-      expect.any(String),
       expect.objectContaining({
         github_context: {
           repository: 'test-owner/test-repo',
@@ -191,9 +186,7 @@ describe('Run Function', () => {
           sha: 'abc123def456',
         },
       }),
-      expect.any(String),
-      expect.any(String),
-      expect.any(Number)
+      expect.any(String)
     );
   });
 

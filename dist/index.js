@@ -29966,25 +29966,24 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.sendToZekt = sendToZekt;
 const core = __importStar(__nccwpck_require__(7484));
+const config_1 = __nccwpck_require__(2973);
 const utils_1 = __nccwpck_require__(1798);
-const MAX_RETRIES = 3;
-const INITIAL_RETRY_DELAY_MS = 1000; // 1 second
 /**
  * Send payload to Zekt backend with retry logic
+ * Uses centralized configuration for API endpoint
  */
-async function sendToZekt(url, payload, githubToken, repository, runId, attempt = 1) {
+async function sendToZekt(request, githubToken, attempt = 1) {
+    const config = (0, config_1.getConfig)();
     try {
-        core.debug(`Attempt ${attempt}/${MAX_RETRIES}: Sending request to ${url}`);
-        const response = await fetch(url, {
+        core.debug(`Attempt ${attempt}/${config.maxRetries}: Sending request to ${config.zektApiUrl}/api/zekt/register-run`);
+        const response = await fetch(`${config.zektApiUrl}/api/zekt/register-run`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
                 Authorization: `Bearer ${githubToken}`,
-                'X-GitHub-Repository': repository,
-                'X-GitHub-Run-ID': runId.toString(),
                 'User-Agent': 'zekt-action/1.0.0',
             },
-            body: JSON.stringify(payload),
+            body: JSON.stringify(request),
         });
         // Parse response body
         let responseBody;
@@ -29997,34 +29996,69 @@ async function sendToZekt(url, payload, githubToken, repository, runId, attempt 
                 error: `HTTP ${response.status}: ${response.statusText}`,
             };
         }
-        // Handle error responses first (before retry logic)
-        if (!response.ok) {
-            const errorMessage = responseBody.error || `HTTP ${response.status}: ${response.statusText}`;
-            // Retry on 5xx errors or 429 (rate limit) only
-            if ((response.status >= 500 || response.status === 429) && attempt < MAX_RETRIES) {
-                const delay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt - 1); // Exponential backoff
-                core.warning(`Received ${response.status} from API. Retry attempt ${attempt}/${MAX_RETRIES} after ${delay}ms...`);
-                await (0, utils_1.sleep)(delay);
-                return sendToZekt(url, payload, githubToken, repository, runId, attempt + 1);
-            }
-            // Don't retry on 4xx client errors (401, 403, 400, etc.)
-            throw new Error((0, utils_1.redactSensitiveInfo)(errorMessage));
+        // Handle success responses
+        if (response.ok) {
+            core.debug('Successfully sent to Zekt');
+            return responseBody;
         }
-        return responseBody;
+        // Handle server errors and rate limits (retry)
+        if ((response.status >= 500 || response.status === 429) && attempt < config.maxRetries) {
+            const delay = config.retryDelayMs * Math.pow(2, attempt - 1); // Exponential backoff
+            core.warning(`Received ${response.status} from API. Retry attempt ${attempt}/${config.maxRetries} after ${delay}ms...`);
+            await (0, utils_1.sleep)(delay);
+            return sendToZekt(request, githubToken, attempt + 1);
+        }
+        // Handle client errors (no retry) and max retries exceeded
+        const errorMessage = responseBody.error || `HTTP ${response.status}: ${response.statusText}`;
+        throw new Error((0, utils_1.redactSensitiveInfo)(errorMessage));
     }
     catch (error) {
         // Retry on network errors
-        if (attempt < MAX_RETRIES) {
-            const delay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt - 1);
+        if (attempt < config.maxRetries) {
+            const delay = config.retryDelayMs * Math.pow(2, attempt - 1);
             core.warning(`Network error: ${error instanceof Error ? error.message : 'Unknown error'}. ` +
-                `Retry attempt ${attempt}/${MAX_RETRIES} after ${delay}ms...`);
+                `Retry attempt ${attempt}/${config.maxRetries} after ${delay}ms...`);
             await (0, utils_1.sleep)(delay);
-            return sendToZekt(url, payload, githubToken, repository, runId, attempt + 1);
+            return sendToZekt(request, githubToken, attempt + 1);
         }
         // Redact sensitive info before throwing
         const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
         throw new Error((0, utils_1.redactSensitiveInfo)(errorMessage));
     }
+}
+
+
+/***/ }),
+
+/***/ 2973:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+/**
+ * Centralized configuration for Zekt Action
+ * This keeps sensitive endpoints abstracted from end users
+ * API endpoint is set during action build/deployment via environment variables
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.getConfig = getConfig;
+/**
+ * Load configuration from environment variables
+ * The ZEKT_API_URL should be set during build time from GitHub Actions secrets
+ */
+function getConfig() {
+    const zektApiUrl = process.env.ZEKT_API_URL;
+    if (!zektApiUrl) {
+        throw new Error('ZEKT_API_URL environment variable is not set. ' +
+            'This should be configured in the action repository during deployment.');
+    }
+    return {
+        zektApiUrl,
+        maxPayloadSizeBytes: 512 * 1024, // 512 KB
+        payloadSizeWarningThresholdBytes: 400 * 1024, // 400 KB (80%)
+        maxRetries: 3,
+        retryDelayMs: 1000, // 1 second base delay
+    };
 }
 
 
@@ -30080,12 +30114,11 @@ const api_client_1 = __nccwpck_require__(7475);
 const utils_1 = __nccwpck_require__(1798);
 async function run() {
     try {
-        // 1. Read inputs
+        // 1. Read inputs (no zektApiUrl needed - loaded from config)
         const inputs = {
             zektRunId: parseInt(core.getInput('zekt_run_id', { required: true })),
             zektStepId: core.getInput('zekt_step_id') || 'default',
             zektPayload: core.getInput('zekt_payload', { required: true }),
-            zektApiUrl: core.getInput('zekt_api_url') || 'https://api.zekt.dev/api/zekt/register-run',
             githubToken: core.getInput('github_token', { required: true }),
         };
         // 2. Validate inputs
@@ -30115,9 +30148,9 @@ async function run() {
             zekt_payload: parsedPayload,
             github_context: githubContext,
         };
-        // 7. Send to Zekt backend
+        // 7. Send to Zekt backend (API URL loaded from config/environment)
         core.info(`Sending payload to Zekt (run_id: ${inputs.zektRunId}, step_id: ${inputs.zektStepId})...`);
-        const response = await (0, api_client_1.sendToZekt)(inputs.zektApiUrl, request, inputs.githubToken, githubContext.repository, inputs.zektRunId);
+        const response = await (0, api_client_1.sendToZekt)(request, inputs.githubToken);
         // 8. Set outputs
         core.setOutput('success', 'true');
         core.setOutput('run_id', inputs.zektRunId.toString());
@@ -30284,9 +30317,7 @@ function validateInputs(inputs) {
     if (!inputs.githubToken || inputs.githubToken.trim() === '') {
         throw new Error('github_token is required. Use: ${{ secrets.GITHUB_TOKEN }}');
     }
-    if (!inputs.zektApiUrl || !inputs.zektApiUrl.startsWith('http')) {
-        throw new Error('zekt_api_url must be a valid HTTP/HTTPS URL');
-    }
+    // zektApiUrl no longer validated here - loaded from config/environment
 }
 
 

@@ -4,5 +4,6 @@
 import { RegisterRunRequest, ZektApiResponse } from './types';
 /**
  * Send payload to Zekt backend with retry logic
+ * Uses centralized configuration for API endpoint
  */
-export declare function sendToZekt(url: string, payload: RegisterRunRequest, githubToken: string, repository: string, runId: number, attempt?: number): Promise<ZektApiResponse>;
+export declare function sendToZekt(request: RegisterRunRequest, githubToken: string, attempt?: number): Promise<ZektApiResponse>;

@@ -78,7 +78,5 @@ export function validateInputs(inputs: ActionInputs): void {
     throw new Error('github_token is required. Use: ${{ secrets.GITHUB_TOKEN }}');
   }
 
-  if (!inputs.zektApiUrl || !inputs.zektApiUrl.startsWith('http')) {
-    throw new Error('zekt_api_url must be a valid HTTP/HTTPS URL');
-  }
+  // zektApiUrl no longer validated here - loaded from config/environment
 }

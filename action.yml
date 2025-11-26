@@ -20,11 +20,6 @@ inputs:
     description: 'Custom JSON payload to send to consumers (max 512 KB)'
     required: true
 
-  zekt_api_url:
-    description: 'Zekt API endpoint (override for testing)'
-    required: false
-    default: 'https://api.zekt.dev/api/zekt/register-run'
-
   github_token:
     description: 'GitHub token for authentication (use ${{ secrets.GITHUB_TOKEN }})'
     required: true

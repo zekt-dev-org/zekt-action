@@ -23,7 +23,6 @@ export interface ActionInputs {
   zektRunId: number;
   zektStepId: string;
   zektPayload: string;
-  zektApiUrl: string;
   githubToken: string;
 }
 

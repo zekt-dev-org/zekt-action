@@ -3,36 +3,34 @@
  */
 
 import * as core from '@actions/core';
+import { getConfig } from './config';
 import { RegisterRunRequest, ZektApiResponse } from './types';
 import { sleep, redactSensitiveInfo } from './utils';
 
-const MAX_RETRIES = 3;
-const INITIAL_RETRY_DELAY_MS = 1000; // 1 second
-
 /**
  * Send payload to Zekt backend with retry logic
+ * Uses centralized configuration for API endpoint
  */
 export async function sendToZekt(
-  url: string,
-  payload: RegisterRunRequest,
+  request: RegisterRunRequest,
   githubToken: string,
-  repository: string,
-  runId: number,
   attempt: number = 1
 ): Promise<ZektApiResponse> {
+  const config = getConfig();
+  
   try {
-    core.debug(`Attempt ${attempt}/${MAX_RETRIES}: Sending request to ${url}`);
+    core.debug(
+      `Attempt ${attempt}/${config.maxRetries}: Sending request to ${config.zektApiUrl}/api/zekt/register-run`
+    );
 
-    const response = await fetch(url, {
+    const response = await fetch(`${config.zektApiUrl}/api/zekt/register-run`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${githubToken}`,
-        'X-GitHub-Repository': repository,
-        'X-GitHub-Run-ID': runId.toString(),
         'User-Agent': 'zekt-action/1.0.0',
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(request),
     });
 
     // Parse response body
@@ -46,35 +44,35 @@ export async function sendToZekt(
       };
     }
 
-    // Handle error responses first (before retry logic)
-    if (!response.ok) {
-      const errorMessage = responseBody.error || `HTTP ${response.status}: ${response.statusText}`;
-      
-      // Retry on 5xx errors or 429 (rate limit) only
-      if ((response.status >= 500 || response.status === 429) && attempt < MAX_RETRIES) {
-        const delay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt - 1); // Exponential backoff
-        core.warning(
-          `Received ${response.status} from API. Retry attempt ${attempt}/${MAX_RETRIES} after ${delay}ms...`
-        );
-        await sleep(delay);
-        return sendToZekt(url, payload, githubToken, repository, runId, attempt + 1);
-      }
-      
-      // Don't retry on 4xx client errors (401, 403, 400, etc.)
-      throw new Error(redactSensitiveInfo(errorMessage));
+    // Handle success responses
+    if (response.ok) {
+      core.debug('Successfully sent to Zekt');
+      return responseBody;
     }
 
-    return responseBody;
-  } catch (error) {
-    // Retry on network errors
-    if (attempt < MAX_RETRIES) {
-      const delay = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt - 1);
+    // Handle server errors and rate limits (retry)
+    if ((response.status >= 500 || response.status === 429) && attempt < config.maxRetries) {
+      const delay = config.retryDelayMs * Math.pow(2, attempt - 1); // Exponential backoff
       core.warning(
-        `Network error: ${error instanceof Error ? error.message : 'Unknown error'}. ` +
-          `Retry attempt ${attempt}/${MAX_RETRIES} after ${delay}ms...`
+        `Received ${response.status} from API. Retry attempt ${attempt}/${config.maxRetries} after ${delay}ms...`
       );
       await sleep(delay);
-      return sendToZekt(url, payload, githubToken, repository, runId, attempt + 1);
+      return sendToZekt(request, githubToken, attempt + 1);
+    }
+
+    // Handle client errors (no retry) and max retries exceeded
+    const errorMessage = responseBody.error || `HTTP ${response.status}: ${response.statusText}`;
+    throw new Error(redactSensitiveInfo(errorMessage));
+  } catch (error) {
+    // Retry on network errors
+    if (attempt < config.maxRetries) {
+      const delay = config.retryDelayMs * Math.pow(2, attempt - 1);
+      core.warning(
+        `Network error: ${error instanceof Error ? error.message : 'Unknown error'}. ` +
+          `Retry attempt ${attempt}/${config.maxRetries} after ${delay}ms...`
+      );
+      await sleep(delay);
+      return sendToZekt(request, githubToken, attempt + 1);
     }
 
     // Redact sensitive info before throwing

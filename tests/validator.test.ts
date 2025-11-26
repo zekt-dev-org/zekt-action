@@ -90,7 +90,6 @@ describe('Validator', () => {
       zektRunId: 12345,
       zektStepId: 'test-step',
       zektPayload: '{"test": true}',
-      zektApiUrl: 'https://api.zekt.dev/api/zekt/register-run',
       githubToken: 'ghp_test123456789012345678901234567890',
     };
 
@@ -128,26 +127,6 @@ describe('Validator', () => {
     it('should reject whitespace-only github_token', () => {
       const inputs = { ...validInputs, githubToken: '  ' };
       expect(() => validateInputs(inputs)).toThrow('github_token is required');
-    });
-
-    it('should reject invalid API URL (not HTTP/HTTPS)', () => {
-      const inputs = { ...validInputs, zektApiUrl: 'ftp://invalid.com' };
-      expect(() => validateInputs(inputs)).toThrow('must be a valid HTTP/HTTPS URL');
-    });
-
-    it('should reject empty API URL', () => {
-      const inputs = { ...validInputs, zektApiUrl: '' };
-      expect(() => validateInputs(inputs)).toThrow('must be a valid HTTP/HTTPS URL');
-    });
-
-    it('should accept HTTPS URLs', () => {
-      const inputs = { ...validInputs, zektApiUrl: 'https://custom.api.com/endpoint' };
-      expect(() => validateInputs(inputs)).not.toThrow();
-    });
-
-    it('should accept HTTP URLs (for testing)', () => {
-      const inputs = { ...validInputs, zektApiUrl: 'http://localhost:3000/test' };
-      expect(() => validateInputs(inputs)).not.toThrow();
     });
   });
 });

@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+env:
+  ZEKT_API_URL: ${{ secrets.ZEKT_API_URL }}
+
 permissions:
   contents: write
 
@@ -27,9 +30,13 @@ jobs:
       
       - name: Run tests
         run: npm test
+        env:
+          ZEKT_API_URL: ${{ secrets.ZEKT_API_URL }}
       
       - name: Build action
         run: npm run build
+        env:
+          ZEKT_API_URL: ${{ secrets.ZEKT_API_URL }}
       
       - name: Extract version from tag
         id: get_version

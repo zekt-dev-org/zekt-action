@@ -11,13 +11,11 @@ import { formatBytes } from './utils';
 
 export async function run(): Promise<void> {
   try {
-    // 1. Read inputs
+    // 1. Read inputs (no zektApiUrl needed - loaded from config)
     const inputs: ActionInputs = {
       zektRunId: parseInt(core.getInput('zekt_run_id', { required: true })),
       zektStepId: core.getInput('zekt_step_id') || 'default',
       zektPayload: core.getInput('zekt_payload', { required: true }),
-      zektApiUrl:
-        core.getInput('zekt_api_url') || 'https://api.zekt.dev/api/zekt/register-run',
       githubToken: core.getInput('github_token', { required: true }),
     };
 
@@ -53,17 +51,11 @@ export async function run(): Promise<void> {
       github_context: githubContext,
     };
 
-    // 7. Send to Zekt backend
+    // 7. Send to Zekt backend (API URL loaded from config/environment)
     core.info(
       `Sending payload to Zekt (run_id: ${inputs.zektRunId}, step_id: ${inputs.zektStepId})...`
     );
-    const response = await sendToZekt(
-      inputs.zektApiUrl,
-      request,
-      inputs.githubToken,
-      githubContext.repository,
-      inputs.zektRunId
-    );
+    const response = await sendToZekt(request, inputs.githubToken);
 
     // 8. Set outputs
     core.setOutput('success', 'true');

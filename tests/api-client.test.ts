@@ -10,6 +10,17 @@ import { sleep } from '../src/utils';
 // Mock @actions/core
 jest.mock('@actions/core');
 
+// Mock config
+jest.mock('../src/config', () => ({
+  getConfig: jest.fn(() => ({
+    zektApiUrl: 'https://api.zekt.dev',
+    maxPayloadSizeBytes: 512 * 1024,
+    payloadSizeWarningThresholdBytes: 400 * 1024,
+    maxRetries: 3,
+    retryDelayMs: 1000,
+  })),
+}));
+
 // Mock utils
 jest.mock('../src/utils', () => {
   const actual = jest.requireActual('../src/utils');
@@ -43,7 +54,6 @@ describe('API Client', () => {
   };
 
   const mockToken = 'ghp_test123';
-  const mockUrl = 'https://api.zekt.dev/api/zekt/register-run';
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -65,18 +75,16 @@ describe('API Client', () => {
         json: async () => mockResponse,
       });
 
-      const result = await sendToZekt(mockUrl, mockPayload, mockToken, 'owner/repo', 12345);
+      const result = await sendToZekt(mockPayload, mockToken);
 
       expect(result).toEqual(mockResponse);
       expect(global.fetch).toHaveBeenCalledWith(
-        mockUrl,
+        'https://api.zekt.dev/api/zekt/register-run',
         expect.objectContaining({
           method: 'POST',
           headers: expect.objectContaining({
             'Content-Type': 'application/json',
             Authorization: `Bearer ${mockToken}`,
-            'X-GitHub-Repository': 'owner/repo',
-            'X-GitHub-Run-ID': '12345',
             'User-Agent': 'zekt-action/1.0.0',
           }),
           body: JSON.stringify(mockPayload),
@@ -98,7 +106,7 @@ describe('API Client', () => {
           json: async () => ({ success: true, message: 'Success on retry' }),
         });
 
-      const result = await sendToZekt(mockUrl, mockPayload, mockToken, 'owner/repo', 12345);
+      const result = await sendToZekt(mockPayload, mockToken);
 
       expect(result.success).toBe(true);
       expect(global.fetch).toHaveBeenCalledTimes(2);
@@ -119,7 +127,7 @@ describe('API Client', () => {
           json: async () => ({ success: true }),
         });
 
-      await sendToZekt(mockUrl, mockPayload, mockToken, 'owner/repo', 12345);
+      await sendToZekt(mockPayload, mockToken);
 
       expect(global.fetch).toHaveBeenCalledTimes(2);
       expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('429'));
@@ -143,7 +151,7 @@ describe('API Client', () => {
           json: async () => ({ success: true }),
         });
 
-      await sendToZekt(mockUrl, mockPayload, mockToken, 'owner/repo', 12345);
+      await sendToZekt(mockPayload, mockToken);
 
       expect(sleep).toHaveBeenNthCalledWith(1, 1000); // 2^0 * 1000
       expect(sleep).toHaveBeenNthCalledWith(2, 2000); // 2^1 * 1000
@@ -168,7 +176,7 @@ describe('API Client', () => {
         });
 
       await expect(
-        sendToZekt(mockUrl, mockPayload, mockToken, 'owner/repo', 12345)
+        sendToZekt(mockPayload, mockToken)
       ).rejects.toThrow('Persistent error');
 
       expect(global.fetch).toHaveBeenCalledTimes(3); // Initial + 2 retries
@@ -183,7 +191,7 @@ describe('API Client', () => {
           json: async () => ({ success: true }),
         });
 
-      const result = await sendToZekt(mockUrl, mockPayload, mockToken, 'owner/repo', 12345);
+      const result = await sendToZekt(mockPayload, mockToken);
 
       expect(result.success).toBe(true);
       expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Network error'));
