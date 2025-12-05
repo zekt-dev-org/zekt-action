@@ -14,10 +14,6 @@ inputs:
     description: 'JSON payload to send with the event'
     required: false
     default: '{}'
-  zekt-api-url:
-    description: 'Zekt API URL (optional - defaults to production)'
-    required: false
-    default: 'https://zekt-customer-api.azurewebsites.net'
 
 outputs:
   event-id:
@@ -83,13 +79,17 @@ runs:
       id: send-event
       shell: bash
       env:
-        ZEKT_API_URL: ${{ inputs.zekt-api-url }}
         EVENT_TYPE: ${{ inputs.event-type }}
         PAYLOAD: ${{ inputs.payload }}
         OIDC_TOKEN: ${{ steps.get-token.outputs.oidc_token }}
       run: |
+        # Hardcoded API URL - hidden from callers
+        ZEKT_API_URL="https://fxdevzektapp.azurewebsites.net"
+        
+        # Mask the URL so it doesn't appear in logs
+        echo "::add-mask::$ZEKT_API_URL"
+        
         echo "📤 Sending event to Zekt..."
-        echo "   API URL: $ZEKT_API_URL"
         echo "   Event Type: $EVENT_TYPE"
         echo "   Repository: $GITHUB_REPOSITORY"
         
