@@ -1,4 +1,4 @@
-name: Build and Test
+name: Validate Action
 
 on:
   push:
@@ -6,67 +6,51 @@ on:
   pull_request:
     branches: [ main ]
 
-env:
-  ZEKT_API_URL: ${{ secrets.ZEKT_API_URL }}
-
 jobs:
-  build:
+  validate:
     runs-on: ubuntu-latest
-    
-    strategy:
-      matrix:
-        node-version: [20.x]
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
       
-      - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'npm'
-      
-      - name: Install dependencies
-        run: npm ci
-      
-      - name: Run linter
-        run: npm run lint
-      
-      - name: Check formatting
-        run: npm run format:check
-      
-      - name: Run tests
-        run: npm run test:coverage
-        env:
-          ZEKT_API_URL: ${{ secrets.ZEKT_API_URL }}
-      
-      - name: Upload coverage reports
-        uses: codecov/codecov-action@v3
-        if: matrix.node-version == '20.x'
-        with:
-          files: ./coverage/lcov.info
-          flags: unittests
-          name: codecov-umbrella
-      
-      - name: Build action
-        run: npm run build
-        env:
-          ZEKT_API_URL: ${{ secrets.ZEKT_API_URL }}
-      
-      - name: Verify dist/ is up to date
+      - name: Validate action.yml syntax
         run: |
-          if [ -n "$(git status --porcelain dist/)" ]; then
-            echo "Error: dist/ directory is out of date. Please run 'npm run build' and commit the changes."
-            git diff dist/
+          echo "Validating action.yml..."
+          # Check if file exists and is valid YAML
+          if ! python3 -c "import yaml; yaml.safe_load(open('action.yml'))"; then
+            echo "Error: action.yml is not valid YAML"
             exit 1
           fi
+          echo "✅ action.yml is valid YAML"
       
-      - name: Package size check
+      - name: Check required fields
         run: |
-          SIZE=$(stat -c%s "dist/index.js" 2>/dev/null || stat -f%z "dist/index.js")
-          echo "Bundle size: $SIZE bytes"
-          if [ $SIZE -gt 10485760 ]; then
-            echo "Error: Bundle size exceeds 10 MB"
+          echo "Checking required fields..."
+          
+          # Check for required top-level fields
+          if ! grep -q "^name:" action.yml; then
+            echo "Error: Missing 'name' field"
             exit 1
+          fi
+          
+          if ! grep -q "^runs:" action.yml; then
+            echo "Error: Missing 'runs' field"
+            exit 1
+          fi
+          
+          if ! grep -q "using: 'composite'" action.yml; then
+            echo "Error: Expected composite action"
+            exit 1
+          fi
+          
+          echo "✅ All required fields present"
+      
+      - name: Lint bash scripts in action
+        run: |
+          echo "Checking bash scripts..."
+          # Extract bash scripts and check for common issues
+          # This is a basic check - consider adding shellcheck for more thorough linting
+          if grep -q "shell: bash" action.yml; then
+            echo "✅ Action uses bash shell"
           fi

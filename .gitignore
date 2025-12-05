@@ -1,14 +1,6 @@
-# Dependencies
-node_modules/
-
-# Build outputs (EXCEPT dist/index.js which MUST be committed for GitHub Actions)
-# dist/ is NOT ignored because GitHub Actions requires the bundled file
-*.tsbuildinfo
-*.log
-
-# Coverage
-coverage/
-*.lcov
+# OS
+.DS_Store
+Thumbs.db
 
 # IDE
 .vscode/
@@ -16,10 +8,6 @@ coverage/
 *.swp
 *.swo
 *~
-
-# OS
-.DS_Store
-Thumbs.db
 
 # Environment
 .env
@@ -29,6 +17,3 @@ Thumbs.db
 # Temporary files
 *.tmp
 .cache/
-
-# Husky
-.husky/_
