@@ -159,7 +159,7 @@ runs:
       shell: bash
       if: always()
       run: |
-        echo "### 📨 Zekt Event Delivery" >> $GITHUB_STEP_SUMMARY
+        echo "### Zekt Event Delivery" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
         echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
