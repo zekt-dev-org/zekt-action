@@ -115,6 +115,15 @@ runs:
             timestamp: (now | todate)
           }')
         
+        # Debug: Show endpoint and payload
+        echo ""
+        echo "🔍 DEBUG - API Endpoint:"
+        echo "   $ZEKT_API_URL/api/events/receive"
+        echo ""
+        echo "🔍 DEBUG - Request Payload:"
+        echo "$REQUEST_BODY" | jq .
+        echo ""
+        
         # Send to Zekt API with OIDC token
         RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
           "$ZEKT_API_URL/api/events/receive" \
