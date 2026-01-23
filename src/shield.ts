@@ -27,7 +27,11 @@ export async function getConsumerKeys(
     repository,
   };
 
-  core.debug(`Fetching consumer keys from ${endpoint}`);
+  core.info(`🔍 Shield Keys Request:`);
+  core.info(`  Endpoint: ${endpoint}`);
+  core.info(`  Repository: ${repository}`);
+  core.info(`  Token length: ${oidcToken.length} chars`);
+  core.info(`  Token prefix: ${oidcToken.substring(0, 20)}...`);
   core.debug(`Request body: ${JSON.stringify(requestBody)}`);
 
   const response = await client.postJson<ShieldKeysResponse>(endpoint, requestBody, {
@@ -35,22 +39,29 @@ export async function getConsumerKeys(
     'content-type': 'application/json',
   });
 
+  core.info(`📥 Shield Keys Response: HTTP ${response.statusCode}`);
+
+  core.info(`📥 Shield Keys Response: HTTP ${response.statusCode}`);
+
   if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
     const errorMsg = (response.result as any)?.error || 'Unknown error';
+    const responseBody = JSON.stringify(response.result);
+    
+    core.error(`Shield API Error Response: ${responseBody}`);
     
     // Provide specific error messages based on status code
     if (response.statusCode === 401 || response.statusCode === 403) {
       throw new Error(
         `Authentication failed (HTTP ${response.statusCode}). ` +
-        `Ensure the workflow has 'permissions: id-token: write'`
+        `Ensure the workflow has 'permissions: id-token: write'. Response: ${responseBody}`
       );
     } else if (response.statusCode === 404) {
       throw new Error(
         `Repository not enabled for Shield (HTTP 404). ` +
-        `Contact Zekt support to enable Shield for this repository.`
+        `Contact Zekt support to enable Shield for this repository. Response: ${responseBody}`
       );
     } else {
-      throw new Error(`Failed to fetch consumer keys (HTTP ${response.statusCode}): ${errorMsg}`);
+      throw new Error(`Failed to fetch consumer keys (HTTP ${response.statusCode}): ${errorMsg}. Response: ${responseBody}`);
     }
   }
 
