@@ -34,42 +34,48 @@ export async function getConsumerKeys(
   core.info(`  Token prefix: ${oidcToken.substring(0, 20)}...`);
   core.debug(`Request body: ${JSON.stringify(requestBody)}`);
 
-  const response = await client.postJson<ShieldKeysResponse>(endpoint, requestBody, {
+  // Use post() instead of postJson() to get raw response
+  const rawResponse = await client.post(endpoint, JSON.stringify(requestBody), {
     'authorization': `Bearer ${oidcToken}`,
     'content-type': 'application/json',
   });
 
-  core.info(`📥 Shield Keys Response: HTTP ${response.statusCode}`);
+  const statusCode = rawResponse.message.statusCode || 0;
+  core.info(`📥 Shield Keys Response: HTTP ${statusCode}`);
 
-  core.info(`📥 Shield Keys Response: HTTP ${response.statusCode}`);
+  const responseBody = await rawResponse.readBody();
+  core.debug(`Response body: ${responseBody.substring(0, 500)}`);
 
-  if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
-    const errorMsg = (response.result as any)?.error || 'Unknown error';
-    const responseBody = JSON.stringify(response.result);
+  if (statusCode < 200 || statusCode >= 300) {
+    core.error(`Error Response Body: ${responseBody}`);
     
-    core.error(`Shield API Error Response: ${responseBody}`);
-    
-    // Provide specific error messages based on status code
-    if (response.statusCode === 401 || response.statusCode === 403) {
+    if (statusCode === 401 || statusCode === 403) {
       throw new Error(
-        `Authentication failed (HTTP ${response.statusCode}). ` +
-        `Ensure the workflow has 'permissions: id-token: write'. Response: ${responseBody}`
+        `Authentication failed (HTTP ${statusCode}). ` +
+        `Ensure the workflow has 'permissions: id-token: write'.`
       );
-    } else if (response.statusCode === 404) {
+    } else if (statusCode === 404) {
       throw new Error(
         `Repository not enabled for Shield (HTTP 404). ` +
-        `Contact Zekt support to enable Shield for this repository. Response: ${responseBody}`
+        `Contact Zekt support to enable Shield for this repository.`
       );
     } else {
-      throw new Error(`Failed to fetch consumer keys (HTTP ${response.statusCode}): ${errorMsg}. Response: ${responseBody}`);
+      throw new Error(`Failed to fetch consumer keys (HTTP ${statusCode}): ${responseBody.substring(0, 200)}`);
     }
   }
 
-  if (!response.result || !response.result.keys) {
+  let response: ShieldKeysResponse;
+  try {
+    response = JSON.parse(responseBody);
+  } catch (error: any) {
+    throw new Error(`Invalid JSON response from Shield API: ${error.message}`);
+  }
+
+  if (!response.keys) {
     throw new Error('Invalid response from Shield keys API: missing "keys" field');
   }
 
-  return response.result.keys;
+  return response.keys;
 }
 
 /**
