@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import { getActionInputs, extractWorkflowPath } from './utils';
+import { getActionInputs } from './utils';
 import { getConsumerKeys, encryptPayload } from './shield';
 import { sendEvent } from './api-client';
 import { ActionInputs, EventRequest, ShieldEnvelope, EventResponse } from './types';
@@ -32,15 +32,11 @@ export async function run(): Promise<void> {
     if (inputs.shield) {
       core.info('🛡️ Shield encryption enabled');
 
-      // Get workflow path
-      const workflowPath = extractWorkflowPath(github.context);
-
       // Get consumer keys
       const consumerKeys = await getConsumerKeys(
         inputs.zektApiUrl,
         oidcToken,
-        github.context.repo.owner + '/' + github.context.repo.repo,
-        workflowPath
+        github.context.repo.owner + '/' + github.context.repo.repo
       );
 
       core.info(`📋 Retrieved ${consumerKeys.length} consumer keys`);

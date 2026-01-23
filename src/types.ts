@@ -15,7 +15,6 @@ export interface ActionInputs {
 
 export interface ShieldKeysRequest {
   repository: string;
-  workflowPath: string;
 }
 
 export interface ConsumerKey {

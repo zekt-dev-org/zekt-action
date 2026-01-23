@@ -34942,10 +34942,8 @@ async function run() {
         let finalPayload = payloadObject;
         if (inputs.shield) {
             core.info('🛡️ Shield encryption enabled');
-            // Get workflow path
-            const workflowPath = (0, utils_1.extractWorkflowPath)(github.context);
             // Get consumer keys
-            const consumerKeys = await (0, shield_1.getConsumerKeys)(inputs.zektApiUrl, oidcToken, github.context.repo.owner + '/' + github.context.repo.repo, workflowPath);
+            const consumerKeys = await (0, shield_1.getConsumerKeys)(inputs.zektApiUrl, oidcToken, github.context.repo.owner + '/' + github.context.repo.repo);
             core.info(`📋 Retrieved ${consumerKeys.length} consumer keys`);
             if (consumerKeys.length === 0) {
                 throw new Error('Shield encryption failed: No consumers found. ' +
@@ -35062,12 +35060,11 @@ const http_client_1 = __nccwpck_require__(4844);
 /**
  * Get consumer public keys from Zekt backend
  */
-async function getConsumerKeys(apiUrl, oidcToken, repository, workflowPath) {
+async function getConsumerKeys(apiUrl, oidcToken, repository) {
     const client = new http_client_1.HttpClient('zekt-action/2.0.2');
     const endpoint = `${apiUrl}/api/shield/keys`;
     const requestBody = {
         repository,
-        workflowPath,
     };
     core.debug(`Fetching consumer keys from ${endpoint}`);
     core.debug(`Request body: ${JSON.stringify(requestBody)}`);

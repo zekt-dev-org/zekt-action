@@ -18,15 +18,13 @@ import {
 export async function getConsumerKeys(
   apiUrl: string,
   oidcToken: string,
-  repository: string,
-  workflowPath: string
+  repository: string
 ): Promise<ConsumerKey[]> {
   const client = new HttpClient('zekt-action/2.0.2');
   const endpoint = `${apiUrl}/api/shield/keys`;
 
   const requestBody: ShieldKeysRequest = {
     repository,
-    workflowPath,
   };
 
   core.debug(`Fetching consumer keys from ${endpoint}`);
