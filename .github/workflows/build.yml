@@ -39,18 +39,24 @@ jobs:
             exit 1
           fi
           
-          if ! grep -q "using: 'composite'" action.yml; then
-            echo "Error: Expected composite action"
+          # Check for valid action type (node20 or composite)
+          if grep -q "using: 'node20'" action.yml; then
+            echo "✅ Node.js action detected"
+          elif grep -q "using: 'composite'" action.yml; then
+            echo "✅ Composite action detected"
+          else
+            echo "Error: Expected node20 or composite action"
             exit 1
           fi
           
           echo "✅ All required fields present"
       
-      - name: Lint bash scripts in action
+      - name: Build TypeScript action
+        if: contains(github.event.head_commit.message, 'node20') || hashFiles('src/**/*.ts') != ''
         run: |
-          echo "Checking bash scripts..."
-          # Extract bash scripts and check for common issues
-          # This is a basic check - consider adding shellcheck for more thorough linting
-          if grep -q "shell: bash" action.yml; then
-            echo "✅ Action uses bash shell"
+          echo "Building TypeScript action..."
+          if [ -f "package.json" ]; then
+            npm ci
+            npm run build
+            echo "✅ Action built successfully"
           fi
