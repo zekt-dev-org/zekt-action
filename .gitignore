@@ -1,3 +1,15 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Build output
+lib/
+coverage/
+*.log
+
+# TypeScript
+*.tsbuildinfo
+
 # OS
 .DS_Store
 Thumbs.db
