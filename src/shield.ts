@@ -31,8 +31,8 @@ export async function getConsumerKeys(
   core.debug(`Request body: ${JSON.stringify(requestBody)}`);
 
   const response = await client.postJson<ShieldKeysResponse>(endpoint, requestBody, {
-    Authorization: `Bearer ${oidcToken}`,
-    'Content-Type': 'application/json',
+    'authorization': `Bearer ${oidcToken}`,
+    'content-type': 'application/json',
   });
 
   if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {

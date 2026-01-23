@@ -13,9 +13,9 @@ export async function sendEvent(
   const endpoint = `${apiUrl}/api/events/receive`;
 
   const response = await client.postJson<EventResponse>(endpoint, eventRequest, {
-    Authorization: `Bearer ${oidcToken}`,
-    'Content-Type': 'application/json',
-    'X-GitHub-Repository': eventRequest.repository,
+    'authorization': `Bearer ${oidcToken}`,
+    'content-type': 'application/json',
+    'x-github-repository': eventRequest.repository,
   });
 
   if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
