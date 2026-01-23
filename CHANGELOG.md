@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-01-23
+
+### Added
+- **Shield Encryption** - Optional end-to-end payload encryption using hybrid cryptography (AES-256-GCM + RSA-OAEP)
+- New `shield` input parameter (optional, default: `false`)
+- POST `/api/shield/keys` endpoint integration to fetch consumer public keys
+- Automatic workflow path extraction from GitHub context
+- Shield envelope structure for encrypted payloads
+- TypeScript migration from bash composite action
+- Node.js 20 runtime (replacing bash scripts)
+- Comprehensive type definitions for all API contracts
+- Enhanced error handling with specific Shield-related error messages
+- Job summary now shows Shield status
+
+### Changed
+- **Action runtime**: Changed from `composite` (bash) to `node20` (JavaScript)
+- **API client**: Migrated from `curl` to `@actions/http-client`
+- **OIDC handling**: Now uses `core.getIDToken()` instead of manual curl
+- **Payload processing**: Native JSON handling instead of `jq`
+- Action is now built with `@vercel/ncc` (bundled JavaScript)
+- API URL default updated to `https://fxdevzektapp.azurewebsites.net`
+
+### Dependencies
+- Added `@actions/core` ^1.10.1
+- Added `@actions/github` ^6.0.0
+- Added `@actions/http-client` ^2.2.0
+- Added `node-rsa` ^1.1.1
+- Added TypeScript development toolchain
+
+### Security
+- Shield encryption uses industry-standard cryptography:
+  - AES-256-GCM for symmetric encryption
+  - RSA-OAEP with SHA-256 for key encryption
+  - Unique AES key generated per event
+  - Automatic key masking in logs
+
+### Backward Compatibility
+✅ **100% backward compatible** with v2.0.1 - Shield is opt-in only
+
+### Migration
+No changes required when upgrading from v2.0.1 to v2.0.2.
+To use Shield encryption, add `shield: true` to your workflow.
+
 ## [2.0.0] - 2025-12-05
 
 ### ⚠️ BREAKING CHANGES

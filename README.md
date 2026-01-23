@@ -9,7 +9,8 @@ Send workflow events to the Zekt broker for distribution to consumers. **No secr
 - 🔐 **Zero Secrets** - No API keys or tokens to configure
 - 🚀 **Simple Integration** - Just 1 required input
 - ✅ **Automatic Authentication** - Uses GitHub OIDC tokens
-- 📋 **Job Summary** - Writes delivery status to workflow summary
+- �️ **Shield Encryption** - Optional end-to-end payload encryption (v2.0.2+)
+- �📋 **Job Summary** - Writes delivery status to workflow summary
 - 📤 **Rich Context** - Automatically includes workflow metadata
 
 ## Quick Start
@@ -32,7 +33,7 @@ jobs:
         run: ./deploy.sh
       
       - name: Notify Zekt
-        uses: zekt-dev-org/zekt-action@v2
+        uses: zekt-dev-org/zekt-action@v2.0.2
         with:
           event-type: 'deployment-complete'
           payload: |
@@ -50,7 +51,8 @@ jobs:
 |-------|----------|---------|-------------|
 | `event-type` | ✅ Yes | - | The type of event to send (e.g., `deployment`, `release`, `build-complete`) |
 | `payload` | No | `{}` | JSON payload to send with the event |
-| `zekt-api-url` | No | `https://zekt-customer-api.azurewebsites.net` | Zekt API URL (for testing/staging) |
+| `shield` | No | `false` | Enable end-to-end encryption of payload (requires consumers with Shield enabled) |
+| `zekt-api-url` | No | `https://fxdevzektapp.azurewebsites.net` | Zekt API URL (for testing/staging) |
 
 ## Outputs
 
@@ -108,12 +110,31 @@ jobs:
     echo "Consumers: ${{ steps.zekt.outputs.consumers-notified }}"
 ```
 
+### With Shield Encryption (v2.0.2+)
+
+```yaml
+- uses: zekt-dev-org/zekt-action@v2.0.2
+  with:
+    event-type: 'deployment'
+    payload: |
+      {
+        "version": "1.0.0",
+        "environment": "production",
+        "secrets": {
+          "api_key": "sensitive-data"
+        }
+      }
+    shield: true  # Enables end-to-end encryption
+```
+
+> 🛡️ **Shield**: Encrypts payload with AES-256-GCM. Only subscribed consumers can decrypt using their private keys.
+
 ### Error Handling
 
 ```yaml
 - name: Send to Zekt
   id: zekt
-  uses: zekt-dev-org/zekt-action@v2
+  uses: zekt-dev-org/zekt-action@v2.0.2
   with:
     event-type: 'notification'
     payload: '{"message": "Hello"}'
@@ -158,9 +179,9 @@ jobs:
 - ✅ **Token masking** - OIDC tokens are masked in logs
 - 🔒 **Repository verification** - Backend validates token claims match repository
 
-## Migrating from v1
+## Migrating from Previous Versions
 
-If you were using v1 with secrets:
+### From v1 to v2.0.2
 
 **Before (v1):**
 ```yaml
@@ -171,17 +192,32 @@ If you were using v1 with secrets:
     github_token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-**After (v2):**
+**After (v2.0.2):**
 ```yaml
 permissions:
   id-token: write
   contents: read
 
 steps:
-  - uses: zekt-dev-org/zekt-action@v2
+  - uses: zekt-dev-org/zekt-action@v2.0.2
     with:
       event-type: 'custom-event'
       payload: '{"data": "example"}'
+```
+
+### From v2.0.1 to v2.0.2
+
+✅ **Fully backward compatible** - no changes required!
+
+v2.0.2 adds optional Shield encryption. Existing workflows work without modification.
+
+**Optional: Enable Shield**
+```yaml
+- uses: zekt-dev-org/zekt-action@v2.0.2
+  with:
+    event-type: 'deployment'
+    payload: '{"data": "example"}'
+    shield: true  # NEW: Optional encryption
 ```
 
 ## License
