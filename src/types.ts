@@ -30,16 +30,16 @@ export interface ShieldKeysResponse {
 // Shield Envelope Types
 // ============================================================================
 
-export interface ShieldRecipient {
+export interface EncryptedRecipient {
   consumerId: string;
-  encryptedKey: string; // Base64-encoded RSA-encrypted AES key
+  encryptedPayload: string; // Base64-encoded RSA-OAEP encrypted payload
 }
 
 export interface ShieldEnvelope {
   type: 'zekt-shield-envelope';
+  recipients: EncryptedRecipient[];
+  algorithm: 'RSA-OAEP';
   version: '1.0';
-  encryptedData: string; // Base64: iv + authTag + encryptedPayload
-  recipients: ShieldRecipient[];
 }
 
 // ============================================================================
@@ -69,13 +69,4 @@ export interface EventResponse {
 // ============================================================================
 // Encryption Internal Types
 // ============================================================================
-
-export interface EncryptedPayload {
-  encryptedData: Buffer;
-  iv: Buffer;
-  authTag: Buffer;
-}
-
-export interface AESKey {
-  key: Buffer; // 32 bytes
-}
+// (Removed - using direct RSA-OAEP, no AES layer)

@@ -42,15 +42,18 @@ export async function run(): Promise<void> {
       core.info(`📋 Retrieved ${consumerKeys.length} consumer keys`);
 
       if (consumerKeys.length === 0) {
-        throw new Error(
-          'Shield encryption failed: No consumers found. ' +
-            'Ensure at least one consumer is subscribed to this provider.'
-        );
+        core.warning('⚠️ No consumers have uploaded Shield public keys');
+        core.warning('   Consumers must upload public keys in Zekt dashboard: Settings > Shield/Consumer Keys');
+        core.warning('   Payload will be sent UNENCRYPTED');
+        core.warning('   If service requires Shield, backend will reject this payload');
+        
+        // Continue without encryption - backend will enforce if needed
+        // finalPayload remains as payloadObject (unencrypted)
+      } else {
+        // Encrypt payload
+        finalPayload = await encryptPayload(payloadObject, consumerKeys);
+        core.info('✅ Payload encrypted successfully');
       }
-
-      // Encrypt payload
-      finalPayload = await encryptPayload(payloadObject, consumerKeys);
-      core.info('✅ Payload encrypted successfully');
     }
 
     // 5. Build event request

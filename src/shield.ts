@@ -1,15 +1,12 @@
 import * as crypto from 'crypto';
 import * as core from '@actions/core';
-import NodeRSA from 'node-rsa';
 import { HttpClient } from '@actions/http-client';
 import {
   ConsumerKey,
   ShieldKeysRequest,
   ShieldKeysResponse,
   ShieldEnvelope,
-  ShieldRecipient,
-  EncryptedPayload,
-  AESKey,
+  EncryptedRecipient,
 } from './types';
 
 /**
@@ -79,95 +76,99 @@ export async function getConsumerKeys(
 }
 
 /**
- * Encrypt payload using hybrid encryption (AES + RSA)
+ * Encrypt payload using direct RSA-OAEP encryption
+ * Encrypts the entire payload for each consumer separately
  */
 export async function encryptPayload(
   payload: unknown,
   consumerKeys: ConsumerKey[]
 ): Promise<ShieldEnvelope> {
-  // 1. Generate random AES key
-  const aesKey = generateAESKey();
-  core.debug('Generated AES-256 key');
+  if (!consumerKeys || consumerKeys.length === 0) {
+    throw new Error('No consumer keys provided for encryption');
+  }
 
-  // 2. Encrypt payload with AES-256-GCM
-  const payloadString = JSON.stringify(payload);
-  const encrypted = encryptWithAES(payloadString, aesKey);
-  core.debug(`Encrypted payload: ${encrypted.encryptedData.length} bytes`);
-
-  // 3. Combine iv + authTag + encryptedData and encode to Base64
-  const combined = Buffer.concat([encrypted.iv, encrypted.authTag, encrypted.encryptedData]);
-  const encryptedDataBase64 = combined.toString('base64');
-
-  // 4. Encrypt AES key for each consumer
-  const recipients: ShieldRecipient[] = [];
-
-  for (const consumer of consumerKeys) {
+  // Serialize payload to JSON
+  const payloadJson = JSON.stringify(payload);
+  const payloadBuffer = Buffer.from(payloadJson, 'utf-8');
+  
+  core.info(`🔐 Encrypting payload (${payloadBuffer.length} bytes) for ${consumerKeys.length} consumer(s)`);
+  
+  const recipients: EncryptedRecipient[] = [];
+  const errors: string[] = [];
+  
+  for (const { consumerId, publicKey } of consumerKeys) {
     try {
-      const encryptedKey = encryptAESKeyWithRSA(aesKey.key, consumer.publicKey);
-      recipients.push({
-        consumerId: consumer.consumerId,
-        encryptedKey,
+      // Validate PEM format
+      if (!publicKey.includes('BEGIN PUBLIC KEY') || !publicKey.includes('END PUBLIC KEY')) {
+        throw new Error('Invalid PEM format: missing BEGIN/END markers');
+      }
+      
+      // Import RSA public key from PEM
+      const publicKeyObject = crypto.createPublicKey({
+        key: publicKey,
+        format: 'pem',
+        type: 'spki'
       });
-      core.debug(`Encrypted AES key for consumer ${consumer.consumerId}`);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      throw new Error(
-        `Failed to encrypt AES key for consumer ${consumer.consumerId}: ${errorMessage}`
+      
+      // Encrypt using RSA-OAEP with SHA-256
+      const encryptedBuffer = crypto.publicEncrypt(
+        {
+          key: publicKeyObject,
+          padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+          oaepHash: 'sha256'
+        },
+        payloadBuffer
       );
+      
+      // Encode to Base64
+      const encryptedPayload = encryptedBuffer.toString('base64');
+      
+      recipients.push({
+        consumerId,
+        encryptedPayload
+      });
+      
+      core.info(`   ✅ Encrypted for consumer: ${consumerId} (${encryptedBuffer.length} bytes)`);
+      
+    } catch (error: any) {
+      // Check for payload size error
+      if (error.message && error.message.includes('data too large')) {
+        const errorMsg = 
+          `Payload too large for RSA encryption (${payloadBuffer.length} bytes). ` +
+          `Maximum: ~190 bytes (2048-bit key) or ~446 bytes (4096-bit key). ` +
+          `Reduce payload size or contact Zekt for hybrid encryption support.`;
+        core.error(`   ❌ ${errorMsg}`);
+        errors.push(`${consumerId}: ${errorMsg}`);
+      } else {
+        const errorMsg = `Failed to encrypt for ${consumerId}: ${error.message}`;
+        core.error(`   ❌ ${errorMsg}`);
+        errors.push(errorMsg);
+      }
+      
+      // Continue to try other consumers even if one fails
+      // This allows partial delivery if some keys are invalid
     }
   }
-
-  // 5. Build Shield envelope
+  
+  // If ALL encryptions failed, throw error
+  if (recipients.length === 0) {
+    throw new Error(`All encryption attempts failed:\n${errors.join('\n')}`);
+  }
+  
+  // If SOME encryptions failed, log warning but continue
+  if (errors.length > 0) {
+    core.warning(`⚠️ Warning: ${errors.length} consumer(s) failed encryption, continuing with ${recipients.length} successful`);
+  }
+  
+  // Build Shield envelope
   const envelope: ShieldEnvelope = {
     type: 'zekt-shield-envelope',
-    version: '1.0',
-    encryptedData: encryptedDataBase64,
     recipients,
+    algorithm: 'RSA-OAEP',
+    version: '1.0'
   };
-
-  core.info(`🛡️ Shield envelope created: ${recipients.length} recipients`);
+  
+  core.info(`✅ Shield envelope created with ${recipients.length} recipient(s)`);
+  
   return envelope;
-}
-
-/**
- * Generate random AES-256 key
- */
-function generateAESKey(): AESKey {
-  return {
-    key: crypto.randomBytes(32), // 256 bits
-  };
-}
-
-/**
- * Encrypt data with AES-256-GCM
- */
-function encryptWithAES(plaintext: string, aesKey: AESKey): EncryptedPayload {
-  const iv = crypto.randomBytes(16); // 128 bits
-  const cipher = crypto.createCipheriv('aes-256-gcm', aesKey.key, iv);
-
-  const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
-
-  const authTag = cipher.getAuthTag();
-
-  return {
-    encryptedData: encrypted,
-    iv,
-    authTag,
-  };
-}
-
-/**
- * Encrypt AES key with RSA-OAEP
- */
-function encryptAESKeyWithRSA(aesKey: Buffer, publicKeyPEM: string): string {
-  try {
-    const key = new NodeRSA();
-    key.importKey(publicKeyPEM, 'pkcs8-public-pem');
-    key.setOptions({ encryptionScheme: 'pkcs1_oaep' });
-
-    return key.encrypt(aesKey, 'base64');
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    throw new Error(`RSA encryption failed: ${errorMessage}`);
-  }
 }
