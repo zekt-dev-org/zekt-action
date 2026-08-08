@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zekt.dev/schemas/orchestration/submit-orchestration-request.schema.json",
+  "title": "SubmitOrchestrationRequest",
+  "description": "Request body for POST /api/orchestration/submit. Sent by zekt-action v3 (orchestrate: true) on behalf of the consumer workflow. Each step targets a Zekt service by its immutable service_slug — the human-readable service name is never used for resolution or routing.",
+  "type": "object",
+  "required": ["workflow_run_id", "services"],
+  "additionalProperties": false,
+  "properties": {
+    "workflow_run_id": {
+      "type": "integer",
+      "description": "GitHub workflow run ID of the consumer workflow that is initiating this orchestration.",
+      "minimum": 1
+    },
+    "execution_mode": {
+      "type": "string",
+      "enum": ["sequential"],
+      "default": "sequential",
+      "description": "Execution strategy. 'parallel' is reserved for Phase 3 — the dependsOn graph is persisted now but only evaluated in sequential order in Phase 1."
+    },
+    "default_service_owner": {
+      "type": "string",
+      "description": "Optional convenience field: default GitHub org name used to resolve each step's target service when the step omits its own service_owner_name. Reduces boilerplate for chains where every step targets services owned by the same organization.",
+      "minLength": 1,
+      "maxLength": 128,
+      "examples": ["platform-team-org"]
+    },
+    "services": {
+      "type": "array",
+      "description": "Ordered list of service steps to orchestrate. In sequential mode, each step runs after the previous one completes successfully.",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": { "$ref": "#/$defs/OrchestrationStep" }
+    }
+  },
+  "$defs": {
+    "OrchestrationStep": {
+      "type": "object",
+      "description": "One step in the orchestration chain. The (service_owner_name, service_slug) tuple uniquely resolves to either a provider ServiceDescription or a consumer ConsumerServiceDescription (SubscriberFires direction only). Consumer services with EventDirection: OwnerFires cannot be orchestration targets.",
+      "required": ["step_id", "service_slug", "input"],
+      "additionalProperties": false,
+      "properties": {
+        "step_id": {
+          "type": "string",
+          "description": "Consumer-assigned identifier for this step. Must be unique within the request. Used in depends_on references and in ${{ steps.STEP_ID.outputs.FIELD }} template expressions in later steps. Never uses the service_slug — this is a caller-defined logical name.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_-]+$"
+        },
+        "service_slug": {
+          "type": "string",
+          "description": "The immutable, machine-readable identifier of the Zekt service to invoke. Set by the service owner in the Zekt Registry, unique per owner. This is the ONLY field used to resolve the target — the human-readable name is never used for routing.",
+          "minLength": 2,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$",
+          "examples": ["new-azure-subscription", "create-resource-group", "provision-keyvault"]
+        },
+        "service_owner_name": {
+          "type": "string",
+          "description": "GitHub organization name of the service owner. Combined with service_slug to resolve the target service. May be omitted per-step when default_service_owner is set at the request level; a step-level value overrides the default. Not a secret — GitHub org names are already public.",
+          "minLength": 1,
+          "maxLength": 128,
+          "examples": ["platform-team-org"]
+        },
+        "requested_by": {
+          "type": "string",
+          "description": "Human-readable identifier for the requesting team. Informational only — never used for authorization, routing, or resolution.",
+          "maxLength": 256
+        },
+        "depends_on": {
+          "type": "array",
+          "description": "step_id values that must reach 'completed' status before this step is dispatched. In sequential mode, Zekt auto-populates this as [previous_step_id] if omitted, so it can be left empty for linear pipelines.",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-zA-Z0-9_-]+$"
+          },
+          "default": [],
+          "uniqueItems": true
+        },
+        "input": {
+          "type": "object",
+          "description": "Arbitrary input payload for this step. Passed verbatim to the target service workflow via repository_dispatch client_payload.input. String values may contain ${{ steps.STEP_ID.outputs.FIELD }} template expressions; these are resolved by the Zekt backend at dispatch time after the referenced step has completed. Dot-notation paths are supported: ${{ steps.STEP_ID.outputs.a.b.c }}.",
+          "additionalProperties": true,
+          "$comment": "Max serialized size: 256 KB. Validated against the target service's registered schema (if any) at submission time (pre-template) and again at dispatch time (post-template)."
+        }
+      },
+      "examples": [
+        {
+          "step_id": "create-sub",
+          "service_slug": "new-azure-subscription",
+          "service_owner_name": "platform-team-org",
+          "requested_by": "dev-team-a",
+          "input": {
+            "billing_account": "ba-123",
+            "display_name": "dev-team-a-sub"
+          }
+        },
+        {
+          "step_id": "create-rg",
+          "service_slug": "new-azure-resource-group",
+          "service_owner_name": "platform-team-org",
+          "requested_by": "dev-team-a",
+          "depends_on": ["create-sub"],
+          "input": {
+            "subscription_id": "${{ steps.create-sub.outputs.subscription_id }}",
+            "name": "rg-prod",
+            "location": "eastus"
+          }
+        }
+      ]
+    }
+  },
+  "examples": [
+    {
+      "$comment": "Verbose form — service_owner_name repeated on every step",
+      "workflow_run_id": 987654321,
+      "execution_mode": "sequential",
+      "services": [
+        {
+          "step_id": "create-sub",
+          "service_slug": "new-azure-subscription",
+          "service_owner_name": "platform-team-org",
+          "requested_by": "dev-team-a",
+          "input": { "billing_account": "ba-123" }
+        },
+        {
+          "step_id": "create-rg",
+          "service_slug": "new-azure-resource-group",
+          "service_owner_name": "platform-team-org",
+          "requested_by": "dev-team-a",
+          "depends_on": ["create-sub"],
+          "input": { "subscription_id": "${{ steps.create-sub.outputs.subscription_id }}" }
+        },
+        {
+          "step_id": "create-kv",
+          "service_slug": "new-azure-keyvault",
+          "service_owner_name": "platform-team-org",
+          "requested_by": "dev-team-a",
+          "depends_on": ["create-rg"],
+          "input": { "resource_group": "${{ steps.create-rg.outputs.resource_group_name }}" }
+        }
+      ]
+    },
+    {
+      "$comment": "Concise form — default_service_owner set once, steps inherit it",
+      "workflow_run_id": 987654322,
+      "default_service_owner": "platform-team-org",
+      "services": [
+        {
+          "step_id": "create-sub",
+          "service_slug": "new-azure-subscription",
+          "input": { "billing_account": "ba-123" }
+        },
+        {
+          "step_id": "create-rg",
+          "service_slug": "new-azure-resource-group",
+          "depends_on": ["create-sub"],
+          "input": { "subscription_id": "${{ steps.create-sub.outputs.subscription_id }}" }
+        }
+      ]
+    },
+    {
+      "$comment": "Mixed form — default set, but one step overrides for a different owner",
+      "workflow_run_id": 987654323,
+      "default_service_owner": "platform-team-org",
+      "services": [
+        {
+          "step_id": "create-sub",
+          "service_slug": "new-azure-subscription",
+          "input": { "billing_account": "ba-123" }
+        },
+        {
+          "step_id": "notify",
+          "service_slug": "post-slack-message",
+          "service_owner_name": "internal-tools-org",
+          "depends_on": ["create-sub"],
+          "input": { "channel": "#platform", "message": "New sub: ${{ steps.create-sub.outputs.subscription_id }}" }
+        }
+      ]
+    }
+  ]
+}

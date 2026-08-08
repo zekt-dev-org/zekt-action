@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zekt.dev/schemas/orchestration/register-run-extension.schema.json",
+  "title": "RegisterRunOrchestrationExtension",
+  "description": "Extension fields added to the existing POST /api/zekt/register-run request body to support orchestration. All fields are optional — their absence means this is a standard non-orchestrated run and existing behavior is unchanged. zekt-action v3 populates orchestration_step_ref automatically by reading client_payload._zekt from $GITHUB_EVENT_PATH when running inside a repository_dispatch-triggered workflow.",
+  "$comment": "This schema documents only the NEW fields. The existing register-run required fields (zekt_run_id, zekt_step_id, zekt_payload) are unchanged.",
+  "type": "object",
+  "properties": {
+    "zekt_run_id": {
+      "type": "integer",
+      "description": "Existing field — GitHub workflow run ID (GITHUB_RUN_ID). Included here for completeness.",
+      "minimum": 1
+    },
+    "zekt_step_id": {
+      "type": "string",
+      "description": "Existing field — always 'default' for standard action calls.",
+      "examples": ["default"]
+    },
+    "zekt_payload": {
+      "type": "object",
+      "description": "Existing field — arbitrary output payload from the provider service workflow. When this run is part of an orchestration, the root properties of this object become the outputs for the step, available as ${{ steps.N.outputs.FIELD }} in downstream steps.",
+      "additionalProperties": true,
+      "$comment": "Max size enforced at 256 KB when orchestration_step_ref is present (tighter than the standard 512 KB limit)."
+    },
+    "orchestration_step_ref": {
+      "description": "NEW — present only when this register-run call originates from a provider service workflow that was dispatched as part of an orchestration. Null or absent for all standard (non-orchestrated) runs.",
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/OrchestrationStepRef" }
+      ]
+    }
+  },
+  "$defs": {
+    "OrchestrationStepRef": {
+      "type": "object",
+      "description": "Identifies which orchestration step this workflow run is fulfilling. Extracted by zekt-action v3 from client_payload._zekt.orchestration in the triggering repository_dispatch event.",
+      "required": ["execution_id", "step_id"],
+      "additionalProperties": false,
+      "properties": {
+        "execution_id": {
+          "type": "string",
+          "description": "The orchestration execution ID this run belongs to. Mirrors OrchestrationContext.executionId from the dispatch payload.",
+          "pattern": "^exec-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "examples": ["exec-a1b2c3d4-e5f6-7890-abcd-ef1234567890"]
+        },
+        "step_id": {
+          "type": "string",
+          "description": "The step_id within the orchestration this run is fulfilling. Mirrors OrchestrationContext.stepId from the dispatch payload.",
+          "minLength": 1,
+          "maxLength": 64,
+          "examples": ["2", "create-rg"]
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "$comment": "Standard non-orchestrated call — no change to existing behavior",
+      "zekt_run_id": 987654321,
+      "zekt_step_id": "default",
+      "zekt_payload": {
+        "result": "success"
+      }
+    },
+    {
+      "$comment": "Orchestrated call — zekt-action v3 auto-populates orchestration_step_ref from GITHUB_EVENT_PATH",
+      "zekt_run_id": 987654322,
+      "zekt_step_id": "default",
+      "zekt_payload": {
+        "subscription_id": "sub-abc123",
+        "tenant_id": "tenant-xyz"
+      },
+      "orchestration_step_ref": {
+        "execution_id": "exec-a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        "step_id": "1"
+      }
+    }
+  ]
+}

@@ -1,0 +1,511 @@
+# zekt-action v3 — Implementation Brief
+
+**For:** The AI agent / developer working in the `zekt-dev-org/zekt-action` repository  
+**Relates to:** Zekt spec 113 — True GitHub Workflow Orchestration  
+**Status:** Ready for implementation  
+**Date:** 2026-08-08
+
+---
+
+## 1. What Is This?
+
+`zekt-action` is a GitHub Action that provider service workflows call to register their
+workflow run with the Zekt backend and submit an output payload. This is currently v2.
+
+**v3 adds orchestration support** — a new capability where a consumer workflow can submit
+a multi-step service chain to the Zekt backend in a single action call, receive an
+`execution_id`, and optionally wait for the entire chain to complete.
+
+**The v2 code path must remain completely unchanged.** Orchestration is activated
+exclusively by the `orchestrate: true` input. When `orchestrate` is omitted or `false`,
+the action must behave identically to v2 with zero regressions.
+
+---
+
+## 2. The Discriminator: `orchestrate` (boolean)
+
+Everything in v3 branches on a single input: `orchestrate`.
+
+```
+orchestrate: false (default)  →  existing v2 code path — no changes
+orchestrate: true             →  new orchestration code path
+```
+
+This is the most important constraint in this brief. **Do not change any existing behavior
+unless `orchestrate` is explicitly set to `true`.**
+
+### Why this matters
+
+- Existing service workflows (provider side) already call `zekt-action` with just
+  `payload` and `event-type`. They must continue to work without modification.
+- Consumer workflows that want orchestration opt in explicitly with `orchestrate: true`.
+- The `payload` input has a **different required shape** depending on `orchestrate`:
+  - `orchestrate: false` → `payload` is any arbitrary JSON object (unchanged)
+  - `orchestrate: true` → `payload` must conform to the orchestration request schema
+    (a `services` array — see Section 5)
+
+---
+
+## 3. Changes to `action.yml`
+
+### 3.1 New inputs
+
+```yaml
+inputs:
+  # --- existing inputs unchanged ---
+  event-type:
+    description: 'Event type for standard (non-orchestrated) dispatch'
+    required: false
+  payload:
+    description: >
+      Arbitrary JSON payload (orchestrate: false) OR orchestration plan object
+      (orchestrate: true). See Section 5 for the required shape when orchestrate is true.
+    required: false
+    default: '{}'
+  shield:
+    description: 'Enable payload encryption (existing input, unchanged)'
+    required: false
+    default: 'false'
+
+  # --- new inputs ---
+  orchestrate:
+    description: >
+      When true, treat payload as a multi-step orchestration plan and POST to
+      /api/orchestration/submit instead of /api/zekt/register-run.
+      All orchestration-specific inputs (execution_mode, wait) are ignored
+      when this is false or omitted.
+    required: false
+    default: 'false'
+
+  execution_mode:
+    description: >
+      Execution strategy for the orchestration. Only evaluated when orchestrate: true.
+      'sequential' (default) runs each step after the previous completes.
+      'parallel' is reserved for a future release and will be rejected by the backend.
+    required: false
+    default: 'sequential'
+
+  wait:
+    description: >
+      When true (and orchestrate: true), the action blocks after submitting the
+      orchestration, polling GET /api/orchestration/{execution_id}/status every 30 seconds
+      until the execution reaches a terminal state (completed, failed, timed_out).
+      Step outputs are then written to GITHUB_OUTPUT. Use with caution — orchestrations
+      can take many minutes. Default: false (fire-and-forget).
+    required: false
+    default: 'false'
+```
+
+### 3.2 New outputs
+
+```yaml
+outputs:
+  execution_id:
+    description: >
+      Orchestration execution ID returned by the Zekt backend (e.g. exec-{uuid}).
+      Only set when orchestrate: true. Use this to poll status or correlate
+      the zekt-orchestration-result callback event.
+
+  execution_status:
+    description: >
+      Terminal status of the orchestration: completed | failed | timed_out.
+      Only set when orchestrate: true AND wait: true.
+```
+
+---
+
+## 4. Code Path: `orchestrate: false` (Existing — Do Not Break)
+
+The existing path calls `POST /api/zekt/register-run`. In v3, **one additive change** is
+made to this path: if the action detects it is running inside a `repository_dispatch`-triggered
+workflow, it reads `client_payload._zekt` from the GitHub event file and includes it as
+`orchestration_step_ref` in the request body.
+
+**This is transparent to provider service workflows — they require zero changes.**
+
+```bash
+# Auto-detect orchestration context if triggered by repository_dispatch
+ORCH_CONTEXT="null"
+if [ "$GITHUB_EVENT_NAME" = "repository_dispatch" ]; then
+  ORCH_CONTEXT=$(jq -c '(.client_payload._zekt // empty)' "$GITHUB_EVENT_PATH")
+  # If _zekt is absent, ORCH_CONTEXT stays "null"
+  ORCH_CONTEXT="${ORCH_CONTEXT:-null}"
+fi
+
+REQUEST_BODY=$(jq -n \
+  --arg run_id "$GITHUB_RUN_ID" \
+  --argjson payload "$INPUT_PAYLOAD" \
+  --argjson orch_ctx "$ORCH_CONTEXT" \
+  '{
+    zekt_run_id: ($run_id | tonumber),
+    zekt_step_id: "default",
+    zekt_payload: $payload,
+    orchestration_step_ref: $orch_ctx
+  }')
+
+curl -sf -X POST "$ZEKT_API_BASE/api/zekt/register-run" \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "X-GitHub-Repository: $GITHUB_REPOSITORY" \
+  -d "$REQUEST_BODY"
+```
+
+The `orchestration_step_ref` field is new in the `register-run` request body. When the
+provider service workflow is **not** part of an orchestration, `ORCH_CONTEXT` is `null`
+and the backend ignores it. When it **is** part of an orchestration, the backend uses it
+to link this workflow run to the correct orchestration step.
+
+---
+
+## 5. Code Path: `orchestrate: true` (New)
+
+### 5.1 Payload schema
+
+When `orchestrate: true`, the `payload` input **must** be a JSON object conforming to
+this shape. The action should validate this before making any API call and fail with a
+clear error if it does not match.
+
+Each step targets a Zekt service by its immutable `service_slug` — a machine-readable
+identifier the service owner registers in the Zekt Registry. The human-readable name
+(`workflowName`) is never used for routing. Targets may be either provider services or
+consumer services with `EventDirection: SubscriberFires` — the backend resolves the
+`(owner, slug)` tuple against both containers uniformly.
+
+```json
+{
+  "default_service_owner": "platform-team-org",
+  "services": [
+    {
+      "step_id": "create-sub",
+      "service_slug": "new-azure-subscription",
+      "requested_by": "dev-team-a",
+      "input": {
+        "billing_account": "ba-123"
+      }
+    },
+    {
+      "step_id": "create-rg",
+      "service_slug": "new-azure-resource-group",
+      "requested_by": "dev-team-a",
+      "depends_on": ["create-sub"],
+      "input": {
+        "subscription_id": "${{ steps.create-sub.outputs.subscription_id }}"
+      }
+    },
+    {
+      "step_id": "create-kv",
+      "service_slug": "new-azure-keyvault",
+      "requested_by": "dev-team-a",
+      "depends_on": ["create-rg"],
+      "input": {
+        "resource_group": "${{ steps.create-rg.outputs.resource_group_name }}"
+      }
+    }
+  ]
+}
+```
+
+**Required fields per step:**
+- `step_id` — unique string within the request, alphanumeric + `_-`, max 64 chars.
+  Used in `depends_on` and in `${{ steps.STEP_ID.outputs.X }}` template expressions.
+- `service_slug` — the target service's slug. Regex: `^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$`
+  (lowercase kebab-case, 2–64 chars).
+- `input` — any JSON object (may contain `${{ steps.STEP_ID.outputs.FIELD }}` strings).
+
+**Optional fields per step:**
+- `service_owner_name` — GitHub org name of the service owner. Required at either the
+  step level OR via the request-root `default_service_owner`. Step-level value wins when
+  both are set.
+- `requested_by` — informational team name, max 256 chars. Never used for routing or auth.
+- `depends_on` — array of `step_id` strings; omit for sequential linear chains.
+
+**Top-level optional:**
+- `default_service_owner` — GitHub org name inherited by any step that omits its own
+  `service_owner_name`. Simplifies the common case where a whole chain targets one org.
+- `execution_mode` — if present in the payload, it takes precedence over the
+  `execution_mode` input; otherwise the input value is used. Accepted value: `"sequential"`.
+
+**Validation the action must perform client-side (before API call):**
+1. `services` array is present and has 1–20 items
+2. All `step_id` values are unique within the request
+3. Every step has `service_slug` and it matches the format regex
+4. Every step has an owner resolvable to it (step-level `service_owner_name` OR
+   request-root `default_service_owner`)
+5. All `depends_on` references point to a `step_id` that exists in the request
+6. `input` is a valid JSON object on every step
+7. Parse error on the `payload` input → fail immediately with a human-readable message
+
+### 5.2 What the action POSTs to the backend
+
+The action wraps the consumer's payload into the `SubmitOrchestrationRequest` body,
+forwarding all top-level fields (`default_service_owner`, `execution_mode` if set inside
+the payload) verbatim:
+
+```bash
+REQUEST_BODY=$(jq -n \
+  --argjson payload "$INPUT_PAYLOAD" \
+  --arg run_id "$GITHUB_RUN_ID" \
+  --arg mode "$INPUT_EXECUTION_MODE" \
+  '{
+    workflow_run_id: ($run_id | tonumber),
+    execution_mode: ($payload.execution_mode // $mode),
+    default_service_owner: $payload.default_service_owner,
+    services: $payload.services
+  } | with_entries(select(.value != null))')
+
+RESPONSE=$(curl -sf -X POST "$ZEKT_API_BASE/api/orchestration/submit" \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "X-GitHub-Repository: $GITHUB_REPOSITORY" \
+  -d "$REQUEST_BODY")
+
+EXECUTION_ID=$(echo "$RESPONSE" | jq -r '.execution_id')
+echo "execution_id=$EXECUTION_ID" >> "$GITHUB_OUTPUT"
+```
+
+### 5.3 Optional wait / poll loop (when `wait: true`)
+
+```bash
+if [ "$INPUT_WAIT" = "true" ]; then
+  echo "Polling orchestration status for $EXECUTION_ID ..."
+  while true; do
+    STATUS_RESPONSE=$(curl -sf "$ZEKT_API_BASE/api/orchestration/$EXECUTION_ID/status" \
+      -H "Authorization: Bearer $GITHUB_TOKEN" \
+      -H "X-GitHub-Repository: $GITHUB_REPOSITORY")
+
+    STATUS=$(echo "$STATUS_RESPONSE" | jq -r '.status')
+
+    if [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ] || [ "$STATUS" = "timed_out" ]; then
+      echo "execution_status=$STATUS" >> "$GITHUB_OUTPUT"
+
+      # Write each step's outputs as: step_{step_id}_outputs_{field}=value
+      echo "$STATUS_RESPONSE" | jq -r '
+        .steps[] |
+        . as $step |
+        (.outputs // {}) | to_entries[] |
+        "step_\($step.step_id)_outputs_\(.key)=\(.value)"
+      ' >> "$GITHUB_OUTPUT"
+
+      if [ "$STATUS" != "completed" ]; then
+        echo "::error::Orchestration $EXECUTION_ID ended with status: $STATUS"
+        exit 1
+      fi
+      break
+    fi
+
+    echo "Status: $STATUS — waiting 30s ..."
+    sleep 30
+  done
+fi
+```
+
+---
+
+## 6. Consumer-Facing Usage Examples
+
+### 6.1 Fire-and-forget (no wait)
+
+```yaml
+- name: Submit orchestration
+  id: orchestrate
+  uses: zekt-dev-org/zekt-action@v3
+  with:
+    orchestrate: true
+    payload: |
+      {
+        "default_service_owner": "platform-team-org",
+        "services": [
+          {
+            "step_id": "create-sub",
+            "service_slug": "new-azure-subscription",
+            "input": { "billing_account": "ba-123" }
+          },
+          {
+            "step_id": "create-rg",
+            "service_slug": "new-azure-resource-group",
+            "depends_on": ["create-sub"],
+            "input": { "subscription_id": "${{ steps.create-sub.outputs.subscription_id }}" }
+          }
+        ]
+      }
+
+- name: Log execution ID
+  run: echo "Execution: ${{ steps.orchestrate.outputs.execution_id }}"
+```
+
+### 6.2 Wait for completion
+
+```yaml
+- name: Submit and wait
+  id: orchestrate
+  uses: zekt-dev-org/zekt-action@v3
+  with:
+    orchestrate: true
+    wait: true
+    payload: |
+      {
+        "default_service_owner": "platform-team-org",
+        "services": [...]
+      }
+
+- name: Use outputs
+  run: |
+    echo "Status: ${{ steps.orchestrate.outputs.execution_status }}"
+    echo "Sub ID: ${{ steps.orchestrate.outputs.step_create-sub_outputs_subscription_id }}"
+```
+
+> Step outputs are written to `$GITHUB_OUTPUT` as `step_{step_id}_outputs_{field}` — the
+> `step_id` is the caller-defined identifier from the payload, not the service slug.
+
+### 6.3 Standard non-orchestrated call — unchanged
+
+```yaml
+- uses: zekt-dev-org/zekt-action@v3
+  with:
+    event-type: 'deployment'
+    payload: '{"result": "success", "version": "1.2.3"}'
+```
+
+---
+
+## 7. Implementation Steps
+
+Work through these in order. Each step can be committed independently.
+
+**Step 1 — `action.yml` inputs and outputs**  
+Add the three new inputs (`orchestrate`, `execution_mode`, `wait`) and two new outputs
+(`execution_id`, `execution_status`). All new inputs have defaults so they are fully
+optional. Existing inputs and outputs are untouched.
+
+**Step 2 — Provider-side auto-detection (non-orchestrated path)**  
+In the existing `entrypoint.sh` register-run call, add the `GITHUB_EVENT_PATH` read and
+`orchestration_step_ref` inclusion described in Section 4. This is the only change to the
+existing code path. Add a test that verifies a standard call without any event context
+still sends `orchestration_step_ref: null`.
+
+**Step 3 — Client-side payload validation (orchestration path)**  
+Before making any API call when `orchestrate: true`, validate that `payload` parses as
+valid JSON and contains a `services` array with 1–20 items. Check `step_id` uniqueness
+and `depends_on` references. Emit `::error::` lines and `exit 1` on any failure.
+
+**Step 4 — Submit orchestration call**  
+Implement the `POST /api/orchestration/submit` call (Section 5.2). Write `execution_id`
+to `$GITHUB_OUTPUT`. Log the execution ID to the step summary.
+
+**Step 5 — Wait / poll loop**  
+Implement the optional poll loop (Section 5.3). Write `execution_status` and all
+`step_{id}_outputs_{field}` values to `$GITHUB_OUTPUT`. Exit with code 1 when status is
+not `completed`.
+
+**Step 6 — README updates**  
+Add an "Orchestration" section to the action README with the examples from Section 6.
+Clearly document the `orchestrate: true` requirement and the payload schema.
+
+**Step 7 — Version bump to v3**  
+Update `action.yml` version references, tag, and the `v3` major version alias.
+
+---
+
+## 8. Concerns and Edge Cases
+
+### 8.1 `payload` is a multiline YAML string
+
+Consumers will likely write `payload` as a multiline YAML block scalar (`payload: |`).
+The action receives this as a single string. Ensure the JSON parse step handles leading/
+trailing whitespace and newlines correctly. Prefer `jq empty <<< "$INPUT_PAYLOAD"` for
+validation rather than shell string manipulation.
+
+### 8.2 Poll loop and job timeout
+
+When `wait: true`, the action will block for as long as the orchestration runs (up to 24
+hours by the Zekt backend limit). The consumer's GitHub Actions job must have a `timeout-minutes`
+set at the job or step level if they want a hard cap. Document this prominently in the README.
+Do not add an internal timeout to the poll loop — that is the consumer's responsibility.
+
+### 8.3 `execution_mode` conflict resolution
+
+`execution_mode` can be specified as an action input AND as a key inside the `payload`
+object. The rule: if `payload.execution_mode` exists, it wins. If not, fall back to the
+`execution_mode` action input. If neither is present, default to `"sequential"`.
+
+### 8.4 `${{ steps.N.outputs.FIELD }}` expressions in `input`
+
+These template expressions in the consumer's payload are **not** resolved by the action.
+They are passed verbatim to the Zekt backend, which resolves them at dispatch time (after
+each dependent step completes). The action must not attempt to expand them client-side.
+
+### 8.5 Error response handling
+
+When the backend returns a non-2xx status, the action must:
+- Print the HTTP status code and response body using `::error::` syntax
+- Exit with code 1
+- Never expose any internal backend detail beyond what the response body contains
+
+Use `curl -f` (fail on non-2xx) and capture stderr separately. Do not swallow errors.
+
+**Uniform `403` for auth/resolution:** The backend returns `403` with the message
+`"Service '{owner}/{slug}' not found or you are not authorized to use it."` for BOTH
+"unknown slug" and "known slug but no approved subscription". This is intentional
+(prevents enumeration). The action should surface this message verbatim — do not
+attempt to interpret it or split the two cases.
+
+### 8.6 Backwards compatibility guarantee
+
+Adding `orchestration_step_ref: null` to all existing `register-run` calls (Section 4)
+is safe only if the backend tolerates this field being `null` when not in an orchestration.
+Confirm with the backend team before deploying — or conditionally omit the field entirely
+when `ORCH_CONTEXT` is null, using `jq`'s `if ... then ... else . end` to exclude the key.
+
+### 8.7 GitHub token scope
+
+The same `GITHUB_TOKEN` used for existing `register-run` calls is used for orchestration
+submit and status poll. No additional token configuration is required from the consumer.
+The Zekt backend validates the token against the `X-GitHub-Repository` header.
+
+---
+
+## 9. Key Files to Modify
+
+| File | Change |
+|---|---|
+| `action.yml` | Add 3 inputs, 2 outputs |
+| `entrypoint.sh` (or equivalent) | Branch on `INPUT_ORCHESTRATE`; add auto-detection for provider path |
+| `README.md` | New "Orchestration" section |
+
+If the action uses a compiled language or bundled JS instead of shell, apply the same
+logic structure — the branching on `orchestrate`, the two API endpoints, and the poll loop
+are language-agnostic.
+
+---
+
+## 10. Reference: API Endpoints
+
+| Method | Path | Used when |
+|---|---|---|
+| `POST` | `/api/zekt/register-run` | `orchestrate: false` (existing) |
+| `POST` | `/api/orchestration/submit` | `orchestrate: true` |
+| `GET` | `/api/orchestration/{execution_id}/status` | `orchestrate: true` + `wait: true` |
+
+All requests:
+- `Authorization: Bearer $GITHUB_TOKEN`
+- `Content-Type: application/json`
+- `X-GitHub-Repository: $GITHUB_REPOSITORY`
+
+---
+
+## 11. Reference: JSON Schemas
+
+The full JSON schemas for the request/response bodies are in the Zekt main repo at:
+
+```
+specs/113-true-github-workflow-orchestration/schemas/
+  submit-orchestration-request.schema.json       ← what this action POSTs (orchestrate: true)
+  provider-dispatch-client-payload.schema.json   ← what the backend sends to provider repos
+  register-run-extension.schema.json             ← extension to the existing register-run body
+  orchestration-callback-payload.schema.json     ← the zekt-orchestration-result callback shape
+```
+
+The most relevant for this implementation is `submit-orchestration-request.schema.json`
+(the shape of the `payload` input when `orchestrate: true`) and
+`register-run-extension.schema.json` (the `orchestration_step_ref` field added to the
+existing register-run call).
