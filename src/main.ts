@@ -1,21 +1,35 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import { getActionInputs } from './utils';
+import { getActionInputs, readOrchestrationStepRef } from './utils';
 import { getConsumerKeys, encryptPayload } from './shield';
 import { sendEvent } from './api-client';
+import { runOrchestration } from './orchestrate';
 import { ActionInputs, EventRequest, ShieldEnvelope, EventResponse } from './types';
 
 export async function run(): Promise<void> {
   try {
     // 1. Get inputs
     const inputs = getActionInputs();
-    core.info(`Event Type: ${inputs.eventType}`);
-    core.info(`Shield: ${inputs.shield}`);
+    core.info(`Orchestrate: ${inputs.orchestrate}`);
 
-    // 2. Get OIDC token
+    // 2. Get OIDC token (used by both paths)
     const oidcToken = await core.getIDToken('api://zekt');
     core.setSecret(oidcToken);
     core.info('✅ OIDC token obtained');
+
+    // ── Orchestration path ──────────────────────────────────────────────────
+    if (inputs.orchestrate) {
+      await runOrchestration(inputs, oidcToken);
+      return;
+    }
+
+    // ── Standard (v2) path ──────────────────────────────────────────────────
+    if (!inputs.eventType) {
+      throw new Error('"event-type" input is required when orchestrate is false');
+    }
+
+    core.info(`Event Type: ${inputs.eventType}`);
+    core.info(`Shield: ${inputs.shield}`);
 
     // 3. Parse payload
     let payloadObject: unknown;
@@ -56,7 +70,12 @@ export async function run(): Promise<void> {
       }
     }
 
-    // 5. Build event request
+    // 5. Build event request — auto-detect orchestration context for provider workflows
+    const orchestrationStepRef = readOrchestrationStepRef();
+    if (orchestrationStepRef) {
+      core.info(`🔗 Orchestration context detected — execution_id: ${orchestrationStepRef.execution_id}, step_id: ${orchestrationStepRef.step_id}`);
+    }
+
     const eventRequest: EventRequest = {
       eventType: inputs.eventType,
       repository: github.context.repo.owner + '/' + github.context.repo.repo,
@@ -67,6 +86,7 @@ export async function run(): Promise<void> {
       workflow: github.context.workflow,
       payload: finalPayload,
       timestamp: new Date().toISOString(),
+      orchestration_step_ref: orchestrationStepRef,
     };
 
     // 6. Send to Zekt

@@ -1,27 +1,67 @@
 import * as core from '@actions/core';
+import * as fs from 'fs';
 import { Context } from '@actions/github/lib/context';
-import { ActionInputs } from './types';
+import { ActionInputs, OrchestrationStepRef } from './types';
 
 /**
  * Get and validate action inputs
  */
 export function getActionInputs(): ActionInputs {
-  const eventType = core.getInput('event-type', { required: true });
+  const eventType = core.getInput('event-type', { required: false }) || '';
   const payload = core.getInput('payload', { required: false }) || '{}';
   const zektApiUrl =
     core.getInput('zekt-api-url', { required: false }) ||
     'https://fxdevzektapp.azurewebsites.net';
   const shieldInput = core.getInput('shield', { required: false });
+  const orchestrateInput = core.getInput('orchestrate', { required: false });
+  const executionMode = core.getInput('execution_mode', { required: false }) || 'sequential';
+  const waitInput = core.getInput('wait', { required: false });
 
-  // Parse boolean (handles 'true', 'false', '', etc.)
   const shield = shieldInput === 'true';
+  const orchestrate = orchestrateInput === 'true';
+  const wait = waitInput === 'true';
 
   return {
     eventType,
     payload,
     zektApiUrl,
     shield,
+    orchestrate,
+    executionMode,
+    wait,
   };
+}
+
+/**
+ * Reads orchestration_step_ref from the GitHub event file when running inside
+ * a repository_dispatch-triggered workflow that is part of an orchestration.
+ * Returns null for all standard (non-orchestrated) runs.
+ */
+export function readOrchestrationStepRef(): OrchestrationStepRef | null {
+  const eventName = process.env.GITHUB_EVENT_NAME;
+  const eventPath = process.env.GITHUB_EVENT_PATH;
+
+  if (eventName !== 'repository_dispatch' || !eventPath) {
+    return null;
+  }
+
+  try {
+    const raw = fs.readFileSync(eventPath, 'utf-8');
+    const event = JSON.parse(raw);
+    const zektCtx = event?.client_payload?._zekt;
+
+    if (
+      zektCtx &&
+      typeof zektCtx.execution_id === 'string' &&
+      typeof zektCtx.step_id === 'string'
+    ) {
+      return { execution_id: zektCtx.execution_id, step_id: zektCtx.step_id };
+    }
+  } catch {
+    // Non-fatal: if we can't read the event file, treat as non-orchestrated
+  }
+
+  return null;
 }
 
 /**

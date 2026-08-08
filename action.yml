@@ -8,10 +8,12 @@ branding:
 
 inputs:
   event-type:
-    description: 'The type of event to send (e.g., deployment, release, build-complete)'
-    required: true
+    description: 'The type of event to send (e.g., deployment, release, build-complete). Required when orchestrate: false.'
+    required: false
   payload:
-    description: 'JSON payload to send with the event'
+    description: >
+      Arbitrary JSON payload (orchestrate: false) OR orchestration plan object
+      (orchestrate: true). See README for the required shape when orchestrate is true.
     required: false
     default: '{}'
   zekt-api-url:
@@ -22,6 +24,26 @@ inputs:
     description: 'Enable end-to-end encryption of payload (requires consumers with Shield enabled)'
     required: false
     default: 'false'
+  orchestrate:
+    description: >
+      When true, treat payload as a multi-step orchestration plan and POST to
+      /api/orchestration/submit instead of the standard event endpoint.
+      All orchestration-specific inputs (execution_mode, wait) are ignored when false.
+    required: false
+    default: 'false'
+  execution_mode:
+    description: >
+      Execution strategy for the orchestration. Only evaluated when orchestrate: true.
+      'sequential' runs each step after the previous completes.
+    required: false
+    default: 'sequential'
+  wait:
+    description: >
+      When true (and orchestrate: true), the action blocks after submitting the
+      orchestration, polling every 30 seconds until the execution reaches a terminal
+      state (completed, failed, timed_out). Step outputs are then written to GITHUB_OUTPUT.
+    required: false
+    default: 'false'
 
 outputs:
   event-id:
@@ -30,6 +52,10 @@ outputs:
     description: 'Status of the event submission (success/failed)'
   consumers-notified:
     description: 'Number of consumers that will receive this event'
+  execution_id:
+    description: 'Orchestration execution ID returned by the Zekt backend. Only set when orchestrate: true.'
+  execution_status:
+    description: 'Terminal status of the orchestration: completed | failed | timed_out. Only set when orchestrate: true AND wait: true.'
 
 runs:
   using: 'node20'
