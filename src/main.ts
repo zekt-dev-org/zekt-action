@@ -86,7 +86,8 @@ export async function run(): Promise<void> {
       workflow: github.context.workflow,
       payload: finalPayload,
       timestamp: new Date().toISOString(),
-      orchestration_step_ref: orchestrationStepRef,
+      // omit key entirely when null so existing backend ignores the absence
+      ...(orchestrationStepRef && { orchestration_step_ref: orchestrationStepRef }),
     };
 
     // 6. Send to Zekt

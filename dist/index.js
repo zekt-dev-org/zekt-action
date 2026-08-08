@@ -29929,24 +29929,63 @@ function wrappy (fn, cb) {
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.sendEvent = sendEvent;
+exports.submitOrchestration = submitOrchestration;
+exports.getOrchestrationStatus = getOrchestrationStatus;
 const http_client_1 = __nccwpck_require__(4844);
+function makeClient() {
+    return new http_client_1.HttpClient('zekt-action/3.0.0');
+}
+function authHeaders(oidcToken, repository) {
+    return {
+        authorization: `Bearer ${oidcToken}`,
+        'content-type': 'application/json',
+        'x-github-repository': repository,
+    };
+}
 /**
  * Send event to Zekt backend
  */
 async function sendEvent(apiUrl, oidcToken, eventRequest) {
-    const client = new http_client_1.HttpClient('zekt-action/2.0.2');
+    const client = makeClient();
     const endpoint = `${apiUrl}/api/events/receive`;
-    const response = await client.postJson(endpoint, eventRequest, {
-        'authorization': `Bearer ${oidcToken}`,
-        'content-type': 'application/json',
-        'x-github-repository': eventRequest.repository,
-    });
+    const response = await client.postJson(endpoint, eventRequest, authHeaders(oidcToken, eventRequest.repository));
     if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
         const errorMsg = response.result?.error || 'Unknown error';
         throw new Error(`Failed to send event (HTTP ${response.statusCode}): ${errorMsg}`);
     }
     if (!response.result) {
         throw new Error('Invalid response from Zekt API: empty response');
+    }
+    return response.result;
+}
+/**
+ * Submit an orchestration plan to Zekt backend
+ */
+async function submitOrchestration(apiUrl, oidcToken, repository, request) {
+    const client = makeClient();
+    const endpoint = `${apiUrl}/api/orchestration/submit`;
+    const response = await client.postJson(endpoint, request, authHeaders(oidcToken, repository));
+    if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
+        const errorMsg = response.result?.error || 'Unknown error';
+        throw new Error(`Failed to submit orchestration (HTTP ${response.statusCode}): ${errorMsg}`);
+    }
+    if (!response.result?.execution_id) {
+        throw new Error('Invalid response from Zekt API: missing execution_id');
+    }
+    return response.result;
+}
+/**
+ * Poll orchestration status until a terminal state is reached
+ */
+async function getOrchestrationStatus(apiUrl, oidcToken, repository, executionId) {
+    const client = makeClient();
+    const endpoint = `${apiUrl}/api/orchestration/${encodeURIComponent(executionId)}/status`;
+    const response = await client.getJson(endpoint, authHeaders(oidcToken, repository));
+    if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
+        throw new Error(`Failed to get orchestration status (HTTP ${response.statusCode})`);
+    }
+    if (!response.result) {
+        throw new Error('Invalid response from Zekt API: empty status response');
     }
     return response.result;
 }
@@ -30049,16 +30088,27 @@ const github = __importStar(__nccwpck_require__(3228));
 const utils_1 = __nccwpck_require__(1798);
 const shield_1 = __nccwpck_require__(1814);
 const api_client_1 = __nccwpck_require__(7475);
+const orchestrate_1 = __nccwpck_require__(23);
 async function run() {
     try {
         // 1. Get inputs
         const inputs = (0, utils_1.getActionInputs)();
-        core.info(`Event Type: ${inputs.eventType}`);
-        core.info(`Shield: ${inputs.shield}`);
-        // 2. Get OIDC token
+        core.info(`Orchestrate: ${inputs.orchestrate}`);
+        // 2. Get OIDC token (used by both paths)
         const oidcToken = await core.getIDToken('api://zekt');
         core.setSecret(oidcToken);
         core.info('✅ OIDC token obtained');
+        // ── Orchestration path ──────────────────────────────────────────────────
+        if (inputs.orchestrate) {
+            await (0, orchestrate_1.runOrchestration)(inputs, oidcToken);
+            return;
+        }
+        // ── Standard (v2) path ──────────────────────────────────────────────────
+        if (!inputs.eventType) {
+            throw new Error('"event-type" input is required when orchestrate is false');
+        }
+        core.info(`Event Type: ${inputs.eventType}`);
+        core.info(`Shield: ${inputs.shield}`);
         // 3. Parse payload
         let payloadObject;
         try {
@@ -30089,7 +30139,11 @@ async function run() {
                 core.info('✅ Payload encrypted successfully');
             }
         }
-        // 5. Build event request
+        // 5. Build event request — auto-detect orchestration context for provider workflows
+        const orchestrationStepRef = (0, utils_1.readOrchestrationStepRef)();
+        if (orchestrationStepRef) {
+            core.info(`🔗 Orchestration context detected — execution_id: ${orchestrationStepRef.execution_id}, step_id: ${orchestrationStepRef.step_id}`);
+        }
         const eventRequest = {
             eventType: inputs.eventType,
             repository: github.context.repo.owner + '/' + github.context.repo.repo,
@@ -30100,6 +30154,8 @@ async function run() {
             workflow: github.context.workflow,
             payload: finalPayload,
             timestamp: new Date().toISOString(),
+            // omit key entirely when null so existing backend ignores the absence
+            ...(orchestrationStepRef && { orchestration_step_ref: orchestrationStepRef }),
         };
         // 6. Send to Zekt
         const response = await (0, api_client_1.sendEvent)(inputs.zektApiUrl, oidcToken, eventRequest);
@@ -30136,6 +30192,228 @@ async function writeJobSummary(inputs, response, shieldEnabled) {
         ['Status', response.success ? '✅ Success' : '❌ Failed'],
         ['Event ID', response.eventId || 'N/A'],
         ['Consumers Notified', (response.consumersNotified || 0).toString()],
+    ])
+        .addRaw('<hr>')
+        .addRaw('_Sent via [Zekt Action](https://github.com/zekt-dev-org/zekt-action)_')
+        .write();
+}
+
+
+/***/ }),
+
+/***/ 23:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.runOrchestration = runOrchestration;
+const core = __importStar(__nccwpck_require__(7484));
+const github = __importStar(__nccwpck_require__(3228));
+const api_client_1 = __nccwpck_require__(7475);
+const STEP_ID_RE = /^[a-zA-Z0-9_-]+$/;
+const SERVICE_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/;
+const TERMINAL_STATUSES = new Set(['completed', 'failed', 'timed_out']);
+const POLL_INTERVAL_MS = 30_000;
+// ============================================================================
+// Payload validation
+// ============================================================================
+function validateOrchestrationPayload(raw) {
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+        throw new Error('Orchestration payload must be a JSON object');
+    }
+    const payload = raw;
+    if (!Array.isArray(payload.services) || payload.services.length === 0) {
+        throw new Error('Orchestration payload must contain a non-empty "services" array');
+    }
+    if (payload.services.length > 20) {
+        throw new Error(`Orchestration payload "services" array must have at most 20 items (got ${payload.services.length})`);
+    }
+    const knownStepIds = new Set();
+    for (let i = 0; i < payload.services.length; i++) {
+        const step = payload.services[i];
+        const prefix = `services[${i}]`;
+        // step_id
+        if (typeof step.step_id !== 'string' || !step.step_id) {
+            throw new Error(`${prefix}: "step_id" is required and must be a non-empty string`);
+        }
+        if (step.step_id.length > 64 || !STEP_ID_RE.test(step.step_id)) {
+            throw new Error(`${prefix}: "step_id" must match ^[a-zA-Z0-9_-]+$ and be at most 64 chars (got "${step.step_id}")`);
+        }
+        if (knownStepIds.has(step.step_id)) {
+            throw new Error(`${prefix}: duplicate step_id "${step.step_id}"`);
+        }
+        knownStepIds.add(step.step_id);
+        // service_slug
+        if (typeof step.service_slug !== 'string' || !step.service_slug) {
+            throw new Error(`${prefix}: "service_slug" is required`);
+        }
+        if (!SERVICE_SLUG_RE.test(step.service_slug)) {
+            throw new Error(`${prefix}: "service_slug" must match ^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$ (got "${step.service_slug}")`);
+        }
+        // service owner resolution
+        const hasStepOwner = typeof step.service_owner_name === 'string' && step.service_owner_name.length > 0;
+        const hasDefaultOwner = typeof payload.default_service_owner === 'string' &&
+            payload.default_service_owner.length > 0;
+        if (!hasStepOwner && !hasDefaultOwner) {
+            throw new Error(`${prefix}: service owner must be set via "service_owner_name" on the step or "default_service_owner" at the root`);
+        }
+        // input
+        if (typeof step.input !== 'object' ||
+            step.input === null ||
+            Array.isArray(step.input)) {
+            throw new Error(`${prefix}: "input" must be a JSON object`);
+        }
+    }
+    // Validate depends_on references now that all step_ids are known
+    for (let i = 0; i < payload.services.length; i++) {
+        const step = payload.services[i];
+        const prefix = `services[${i}]`;
+        if (step.depends_on !== undefined) {
+            if (!Array.isArray(step.depends_on)) {
+                throw new Error(`${prefix}: "depends_on" must be an array`);
+            }
+            for (const dep of step.depends_on) {
+                if (typeof dep !== 'string') {
+                    throw new Error(`${prefix}: each "depends_on" entry must be a string`);
+                }
+                if (!knownStepIds.has(dep)) {
+                    throw new Error(`${prefix}: "depends_on" references unknown step_id "${dep}"`);
+                }
+            }
+        }
+    }
+    return payload;
+}
+// ============================================================================
+// Main orchestration entry point
+// ============================================================================
+async function runOrchestration(inputs, oidcToken) {
+    const repository = `${github.context.repo.owner}/${github.context.repo.repo}`;
+    // 1. Parse payload
+    let rawPayload;
+    try {
+        rawPayload = JSON.parse(inputs.payload);
+    }
+    catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`Orchestration payload is not valid JSON: ${msg}`);
+    }
+    // 2. Validate orchestration payload structure
+    const orchestrationPayload = validateOrchestrationPayload(rawPayload);
+    core.info(`✅ Orchestration payload validated — ${orchestrationPayload.services.length} step(s)`);
+    // 3. Build request — payload.execution_mode wins over the action input
+    const effectiveMode = orchestrationPayload.execution_mode ?? inputs.executionMode;
+    const request = {
+        workflow_run_id: github.context.runId,
+        execution_mode: effectiveMode,
+        services: orchestrationPayload.services,
+    };
+    if (orchestrationPayload.default_service_owner) {
+        request.default_service_owner = orchestrationPayload.default_service_owner;
+    }
+    // 4. Submit orchestration
+    core.info(`Submitting orchestration (${effectiveMode}, ${request.services.length} step(s)) ...`);
+    const submitResponse = await (0, api_client_1.submitOrchestration)(inputs.zektApiUrl, oidcToken, repository, request);
+    const executionId = submitResponse.execution_id;
+    core.setOutput('execution_id', executionId);
+    core.info(`✅ Orchestration submitted — execution_id: ${executionId}`);
+    // 5. Optionally wait for completion
+    if (inputs.wait) {
+        await pollUntilTerminal(inputs, oidcToken, repository, executionId);
+    }
+    // 6. Write job summary
+    await writeOrchestrationSummary(executionId, request, inputs.wait);
+}
+// ============================================================================
+// Poll loop
+// ============================================================================
+async function pollUntilTerminal(inputs, oidcToken, repository, executionId) {
+    core.info(`Polling orchestration status for ${executionId} (every 30s) ...`);
+    while (true) {
+        const statusResponse = await (0, api_client_1.getOrchestrationStatus)(inputs.zektApiUrl, oidcToken, repository, executionId);
+        const status = statusResponse.status;
+        if (TERMINAL_STATUSES.has(status)) {
+            core.setOutput('execution_status', status);
+            // Write each step's outputs as step_{step_id}_outputs_{field}=value
+            for (const step of statusResponse.steps ?? []) {
+                for (const [field, value] of Object.entries(step.outputs ?? {})) {
+                    core.setOutput(`step_${step.step_id}_outputs_${field}`, String(value));
+                }
+            }
+            if (status !== 'completed') {
+                core.error(`Orchestration ${executionId} ended with status: ${status}`);
+                throw new Error(`Orchestration ended with status: ${status}`);
+            }
+            core.info(`✅ Orchestration completed — execution_id: ${executionId}`);
+            return;
+        }
+        core.info(`Status: ${status} — waiting 30s ...`);
+        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    }
+}
+// ============================================================================
+// Job summary
+// ============================================================================
+async function writeOrchestrationSummary(executionId, request, waited) {
+    const rows = request.services.map((s) => [
+        s.step_id,
+        s.service_slug,
+        s.service_owner_name ?? request.default_service_owner ?? '',
+    ]);
+    await core.summary
+        .addHeading('Zekt Orchestration')
+        .addTable([
+        [
+            { data: 'Property', header: true },
+            { data: 'Value', header: true },
+        ],
+        ['Execution ID', executionId],
+        ['Execution Mode', request.execution_mode],
+        ['Steps', request.services.length.toString()],
+        ['Waited for Completion', waited ? 'Yes' : 'No (fire-and-forget)'],
+    ])
+        .addHeading('Steps', 3)
+        .addTable([
+        [
+            { data: 'step_id', header: true },
+            { data: 'service_slug', header: true },
+            { data: 'owner', header: true },
+        ],
+        ...rows,
     ])
         .addRaw('<hr>')
         .addRaw('_Sent via [Zekt Action](https://github.com/zekt-dev-org/zekt-action)_')
@@ -30359,25 +30637,60 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.getActionInputs = getActionInputs;
+exports.readOrchestrationStepRef = readOrchestrationStepRef;
 exports.extractWorkflowPath = extractWorkflowPath;
 const core = __importStar(__nccwpck_require__(7484));
+const fs = __importStar(__nccwpck_require__(9896));
 /**
  * Get and validate action inputs
  */
 function getActionInputs() {
-    const eventType = core.getInput('event-type', { required: true });
+    const eventType = core.getInput('event-type', { required: false }) || '';
     const payload = core.getInput('payload', { required: false }) || '{}';
     const zektApiUrl = core.getInput('zekt-api-url', { required: false }) ||
         'https://fxdevzektapp.azurewebsites.net';
     const shieldInput = core.getInput('shield', { required: false });
-    // Parse boolean (handles 'true', 'false', '', etc.)
+    const orchestrateInput = core.getInput('orchestrate', { required: false });
+    const executionMode = core.getInput('execution_mode', { required: false }) || 'sequential';
+    const waitInput = core.getInput('wait', { required: false });
     const shield = shieldInput === 'true';
+    const orchestrate = orchestrateInput === 'true';
+    const wait = waitInput === 'true';
     return {
         eventType,
         payload,
         zektApiUrl,
         shield,
+        orchestrate,
+        executionMode,
+        wait,
     };
+}
+/**
+ * Reads orchestration_step_ref from the GitHub event file when running inside
+ * a repository_dispatch-triggered workflow that is part of an orchestration.
+ * Returns null for all standard (non-orchestrated) runs.
+ */
+function readOrchestrationStepRef() {
+    const eventName = process.env.GITHUB_EVENT_NAME;
+    const eventPath = process.env.GITHUB_EVENT_PATH;
+    if (eventName !== 'repository_dispatch' || !eventPath) {
+        return null;
+    }
+    try {
+        const raw = fs.readFileSync(eventPath, 'utf-8');
+        const event = JSON.parse(raw);
+        const zektCtx = event?.client_payload?._zekt;
+        if (zektCtx &&
+            typeof zektCtx.execution_id === 'string' &&
+            typeof zektCtx.step_id === 'string') {
+            return { execution_id: zektCtx.execution_id, step_id: zektCtx.step_id };
+        }
+    }
+    catch {
+        // Non-fatal: if we can't read the event file, treat as non-orchestrated
+    }
+    return null;
 }
 /**
  * Extract workflow path from GitHub context
