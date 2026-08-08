@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-08-08
+
+### Added
+- **Orchestration** (`orchestrate: true`) — submit a multi-step service chain to `POST /api/orchestration/submit` in a single action call
+  - New inputs: `orchestrate`, `execution_mode` (default `sequential`), `wait`
+  - New outputs: `execution_id`, `execution_status`, `step_{step_id}_outputs_{field}`
+  - Client-side payload validation before any API call (step_id uniqueness, service_slug format, owner resolution, depends_on references, input shape)
+  - Optional poll loop (`wait: true`) — polls `GET /api/orchestration/{execution_id}/status` every 30 s until `completed | failed | timed_out`
+- **Provider auto-detection** — when running inside a `repository_dispatch`-triggered workflow that is part of an orchestration, `orchestration_step_ref` is automatically read from `client_payload._zekt` and forwarded to the backend. Transparent to provider workflows — no changes required on the provider side.
+
+### Changed
+- `event-type` input is now `required: false` in `action.yml` (still required at runtime when `orchestrate: false`; validated in code)
+- Agent user-agent string bumped to `zekt-action/3.0.0`
+
+### Backward Compatibility
+✅ **100% backward compatible** with v2.x — the `orchestrate` input defaults to `false` and the entire orchestration feature is opt-in. Existing provider and consumer workflows require zero changes.
+
 ## [2.0.2] - 2026-01-23
 
 ### Added

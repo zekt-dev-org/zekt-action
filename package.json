@@ -1,6 +1,6 @@
 {
   "name": "zekt-action",
-  "version": "2.0.2",
+  "version": "3.0.0",
   "description": "GitHub Action for sending events to Zekt with optional Shield encryption",
   "main": "dist/index.js",
   "scripts": {
@@ -19,7 +19,8 @@
     "workflow",
     "events",
     "encryption",
-    "shield"
+    "shield",
+    "orchestration"
   ],
   "author": "zekt-dev-org",
   "license": "MIT",
