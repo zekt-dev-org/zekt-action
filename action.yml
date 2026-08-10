@@ -58,5 +58,5 @@ outputs:
     description: 'Terminal status of the orchestration: completed | failed | timed_out. Only set when orchestrate: true AND wait: true.'
 
 runs:
-  using: 'node20'
+  using: 'node24'
   main: 'dist/index.js'
