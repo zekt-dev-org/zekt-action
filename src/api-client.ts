@@ -19,38 +19,44 @@ function authHeaders(oidcToken: string, repository: string): Record<string, stri
   };
 }
 
-/**
- * Send event to Zekt backend
- */
+/** Extracts the most useful error string from a raw response body (JSON or HTML/text). */
+function extractErrorMessage(body: string): string {
+  const trimmed = body.trim();
+  if (!trimmed) return '(empty response body)';
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    const msg = parsed['error'] ?? parsed['message'] ?? parsed['title'] ?? parsed['detail'];
+    if (typeof msg === 'string' && msg.trim()) return msg.trim();
+  } catch {
+    // not JSON — strip HTML tags and collapse whitespace
+    return trimmed.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim().slice(0, 400);
+  }
+  return trimmed.slice(0, 400);
+}
+
 export async function sendEvent(
   apiUrl: string,
   oidcToken: string,
   eventRequest: EventRequest
 ): Promise<EventResponse> {
   const client = makeClient();
-  const endpoint = `${apiUrl}/api/events/receive`;
-
-  const response = await client.postJson<EventResponse>(
-    endpoint,
-    eventRequest,
+  const res = await client.post(
+    `${apiUrl}/api/events/receive`,
+    JSON.stringify(eventRequest),
     authHeaders(oidcToken, eventRequest.repository)
   );
-
-  if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
-    const errorMsg = response.result?.error || 'Unknown error';
-    throw new Error(`Failed to send event (HTTP ${response.statusCode}): ${errorMsg}`);
+  const statusCode = res.message.statusCode ?? 0;
+  const body = await res.readBody();
+  if (statusCode < 200 || statusCode >= 300) {
+    throw new Error(`Failed to send event (HTTP ${statusCode}): ${extractErrorMessage(body)}`);
   }
-
-  if (!response.result) {
-    throw new Error('Invalid response from Zekt API: empty response');
+  try {
+    return JSON.parse(body) as EventResponse;
+  } catch {
+    throw new Error(`Invalid response from Zekt API (events/receive): ${body.trim().slice(0, 200)}`);
   }
-
-  return response.result;
 }
 
-/**
- * Submit an orchestration plan to Zekt backend
- */
 export async function submitOrchestration(
   apiUrl: string,
   oidcToken: string,
@@ -58,32 +64,28 @@ export async function submitOrchestration(
   request: SubmitOrchestrationRequest
 ): Promise<SubmitOrchestrationResponse> {
   const client = makeClient();
-  const endpoint = `${apiUrl}/api/orchestration/submit`;
-
-  const response = await client.postJson<SubmitOrchestrationResponse>(
-    endpoint,
-    request,
+  const res = await client.post(
+    `${apiUrl}/api/orchestration/submit`,
+    JSON.stringify(request),
     authHeaders(oidcToken, repository)
   );
-
-  if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
-    const errorMsg =
-      (response.result as unknown as { error?: string })?.error || 'Unknown error';
-    throw new Error(
-      `Failed to submit orchestration (HTTP ${response.statusCode}): ${errorMsg}`
-    );
+  const statusCode = res.message.statusCode ?? 0;
+  const body = await res.readBody();
+  if (statusCode < 200 || statusCode >= 300) {
+    throw new Error(`Failed to submit orchestration (HTTP ${statusCode}): ${extractErrorMessage(body)}`);
   }
-
-  if (!response.result?.execution_id) {
+  let result: SubmitOrchestrationResponse;
+  try {
+    result = JSON.parse(body) as SubmitOrchestrationResponse;
+  } catch {
+    throw new Error(`Invalid response from Zekt API (orchestration/submit): ${body.trim().slice(0, 200)}`);
+  }
+  if (!result.execution_id) {
     throw new Error('Invalid response from Zekt API: missing execution_id');
   }
-
-  return response.result;
+  return result;
 }
 
-/**
- * Poll orchestration status until a terminal state is reached
- */
 export async function getOrchestrationStatus(
   apiUrl: string,
   oidcToken: string,
@@ -91,20 +93,18 @@ export async function getOrchestrationStatus(
   executionId: string
 ): Promise<OrchestrationStatusResponse> {
   const client = makeClient();
-  const endpoint = `${apiUrl}/api/orchestration/${encodeURIComponent(executionId)}/status`;
-
-  const response = await client.getJson<OrchestrationStatusResponse>(
-    endpoint,
+  const res = await client.get(
+    `${apiUrl}/api/orchestration/${encodeURIComponent(executionId)}/status`,
     authHeaders(oidcToken, repository)
   );
-
-  if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) {
-    throw new Error(`Failed to get orchestration status (HTTP ${response.statusCode})`);
+  const statusCode = res.message.statusCode ?? 0;
+  const body = await res.readBody();
+  if (statusCode < 200 || statusCode >= 300) {
+    throw new Error(`Failed to get orchestration status (HTTP ${statusCode}): ${extractErrorMessage(body)}`);
   }
-
-  if (!response.result) {
-    throw new Error('Invalid response from Zekt API: empty status response');
+  try {
+    return JSON.parse(body) as OrchestrationStatusResponse;
+  } catch {
+    throw new Error(`Invalid response from Zekt API (orchestration/status): ${body.trim().slice(0, 200)}`);
   }
-
-  return response.result;
 }
