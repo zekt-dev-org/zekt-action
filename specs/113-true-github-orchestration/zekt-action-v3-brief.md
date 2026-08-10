@@ -121,7 +121,11 @@ made to this path: if the action detects it is running inside a `repository_disp
 workflow, it reads `client_payload._zekt` from the GitHub event file and includes it as
 `orchestration_step_ref` in the request body.
 
-**This is transparent to provider service workflows — they require zero changes.**
+**"Zero changes required" — scope:** This applies only to the `zekt-action` call at the
+end of the provider workflow (output reporting). The action auto-detects `_zekt` context
+automatically. It does **not** mean the provider workflow can continue reading its input
+parameters from an arbitrary path — see Section 7 for what an orchestration-compatible
+provider workflow looks like on the receive side.
 
 ```bash
 # Auto-detect orchestration context if triggered by repository_dispatch
@@ -368,7 +372,119 @@ fi
 
 ---
 
-## 7. Implementation Steps
+## 7. Provider Workflow: Receiving an Orchestration Dispatch
+
+This section documents what an **orchestration-compatible provider service workflow** looks
+like on the **receive side** — i.e., what the provider workflow must do when Zekt calls it
+as part of an orchestration chain.
+
+### 7.1 When this applies
+
+This section is relevant ONLY when a provider workflow is the target of an orchestration
+step (`orchestrate: true` was used by the consumer). Standard non-orchestrated Zekt flows
+(provider → subscriber dispatch) are completely unaffected — their `client_payload`
+structure does not change.
+
+### 7.2 What Zekt sends to the provider repo
+
+When Zekt dispatches an orchestration step to a provider repo, it sends a `repository_dispatch`
+event with this `client_payload` structure:
+
+```json
+{
+  "input": {
+    "billing_account": "ba-123"
+  },
+  "_zekt": {
+    "orchestration": {
+      "executionId": "exec-abc123",
+      "stepId": "create-sub",
+      "requestorRepository": "dev-team-org/dev-repo"
+    }
+  }
+}
+```
+
+The `input` object contains the fully-resolved step input (template expressions like
+`${{ steps.N.outputs.X }}` are substituted by the Zekt backend before dispatch). The
+`_zekt` object is read automatically by `zekt-action` — the provider workflow does not
+need to touch it.
+
+### 7.3 How to read input parameters
+
+The provider workflow reads its parameters from `github.event.client_payload.input`:
+
+```yaml
+on:
+  repository_dispatch:
+    types: [new-azure-subscription-request]   # the event type registered in Zekt Registry
+
+jobs:
+  create-subscription:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract input
+        id: input
+        run: |
+          echo "billing_account=${{ github.event.client_payload.input.billing_account }}" \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Do the work
+        id: work
+        run: |
+          # Create subscription using ${{ steps.input.outputs.billing_account }}
+          SUBSCRIPTION_ID="sub-$(date +%s)"
+          echo "subscription_id=$SUBSCRIPTION_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Report outputs back to Zekt
+        uses: zekt-dev-org/zekt-action@v3
+        with:
+          # No orchestrate: true here — this is the provider reporting its output.
+          # zekt-action auto-detects the _zekt orchestration context from the event file.
+          payload: |
+            {
+              "subscription_id": "${{ steps.work.outputs.subscription_id }}"
+            }
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+### 7.4 Handling both orchestrated and direct dispatches (optional)
+
+If a provider workflow needs to support being called **both** via Zekt orchestration
+and via a direct `repository_dispatch` (e.g., from a human or another system), it can
+branch on the presence of `_zekt`:
+
+```yaml
+      - name: Extract input (conditional path)
+        id: input
+        run: |
+          if [ '${{ toJson(github.event.client_payload._zekt) }}' != 'null' ]; then
+            # Called via Zekt orchestration — input is under client_payload.input
+            echo "billing_account=${{ github.event.client_payload.input.billing_account }}" \
+              >> "$GITHUB_OUTPUT"
+          else
+            # Called directly — input may be at the root of client_payload
+            echo "billing_account=${{ github.event.client_payload.billing_account }}" \
+              >> "$GITHUB_OUTPUT"
+          fi
+```
+
+### 7.5 What "zero changes required" actually means
+
+| Aspect | Zero changes? | Notes |
+|---|---|---|
+| `zekt-action` output call | ✅ Yes | Auto-detects `_zekt` context from `$GITHUB_EVENT_PATH` |
+| Input parameter reading | ⚠️ Conditional | Must read from `client_payload.input` when called via orchestration |
+| Workflow trigger (`on:`) | ✅ Yes | Uses the same event type already registered in Zekt Registry |
+| Secrets / tokens | ✅ Yes | `GITHUB_TOKEN` works the same way |
+
+The `supportsOrchestration` flag (Phase 2 of spec 113) will allow providers to explicitly
+advertise orchestration compatibility in the Zekt Registry.
+
+---
+
+## 8. Implementation Steps
 
 Work through these in order. Each step can be committed independently.
 
@@ -406,7 +522,7 @@ Update `action.yml` version references, tag, and the `v3` major version alias.
 
 ---
 
-## 8. Concerns and Edge Cases
+## 9. Concerns and Edge Cases
 
 ### 8.1 `payload` is a multiline YAML string
 
