@@ -30680,11 +30680,12 @@ function readOrchestrationStepRef() {
     try {
         const raw = fs.readFileSync(eventPath, 'utf-8');
         const event = JSON.parse(raw);
-        const zektCtx = event?.client_payload?._zekt;
-        if (zektCtx &&
-            typeof zektCtx.execution_id === 'string' &&
-            typeof zektCtx.step_id === 'string') {
-            return { execution_id: zektCtx.execution_id, step_id: zektCtx.step_id };
+        // _zekt.orchestration uses camelCase: executionId, stepId
+        const orch = event?.client_payload?._zekt?.orchestration;
+        if (orch &&
+            typeof orch.executionId === 'string' &&
+            typeof orch.stepId === 'string') {
+            return { execution_id: orch.executionId, step_id: orch.stepId };
         }
     }
     catch {

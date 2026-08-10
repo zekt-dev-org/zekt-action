@@ -48,14 +48,15 @@ export function readOrchestrationStepRef(): OrchestrationStepRef | null {
   try {
     const raw = fs.readFileSync(eventPath, 'utf-8');
     const event = JSON.parse(raw);
-    const zektCtx = event?.client_payload?._zekt;
+    // _zekt.orchestration uses camelCase: executionId, stepId
+    const orch = event?.client_payload?._zekt?.orchestration;
 
     if (
-      zektCtx &&
-      typeof zektCtx.execution_id === 'string' &&
-      typeof zektCtx.step_id === 'string'
+      orch &&
+      typeof orch.executionId === 'string' &&
+      typeof orch.stepId === 'string'
     ) {
-      return { execution_id: zektCtx.execution_id, step_id: zektCtx.step_id };
+      return { execution_id: orch.executionId, step_id: orch.stepId };
     }
   } catch {
     // Non-fatal: if we can't read the event file, treat as non-orchestrated
