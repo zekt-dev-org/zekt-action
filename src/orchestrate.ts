@@ -146,7 +146,7 @@ export async function runOrchestration(inputs: ActionInputs, oidcToken: string):
   // 4. Submit orchestration
   core.info(`Submitting orchestration (${effectiveMode}, ${request.services.length} step(s)) ...`);
   const submitResponse = await submitOrchestration(
-    inputs.zektApiUrl,
+    inputs.orchestrationApiUrl,
     oidcToken,
     repository,
     request
@@ -158,7 +158,7 @@ export async function runOrchestration(inputs: ActionInputs, oidcToken: string):
 
   // 5. Optionally wait for completion
   if (inputs.wait) {
-    await pollUntilTerminal(inputs, oidcToken, repository, executionId);
+    await pollUntilTerminal(inputs.orchestrationApiUrl, oidcToken, repository, executionId);
   }
 
   // 6. Write job summary
@@ -170,7 +170,7 @@ export async function runOrchestration(inputs: ActionInputs, oidcToken: string):
 // ============================================================================
 
 async function pollUntilTerminal(
-  inputs: ActionInputs,
+  apiUrl: string,
   oidcToken: string,
   repository: string,
   executionId: string
@@ -179,7 +179,7 @@ async function pollUntilTerminal(
 
   while (true) {
     const statusResponse = await getOrchestrationStatus(
-      inputs.zektApiUrl,
+      apiUrl,
       oidcToken,
       repository,
       executionId

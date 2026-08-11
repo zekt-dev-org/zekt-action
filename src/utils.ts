@@ -12,6 +12,9 @@ export function getActionInputs(): ActionInputs {
   const zektApiUrl =
     core.getInput('zekt-api-url', { required: false }) ||
     'https://fxdevzektapp.azurewebsites.net';
+  const orchestrationApiUrl =
+    core.getInput('orchestration-api-url', { required: false }) ||
+    'https://www.zekt.dev';
   const shieldInput = core.getInput('shield', { required: false });
   const orchestrateInput = core.getInput('orchestrate', { required: false });
   const executionMode = core.getInput('execution_mode', { required: false }) || 'sequential';
@@ -25,6 +28,7 @@ export function getActionInputs(): ActionInputs {
     eventType,
     payload,
     zektApiUrl,
+    orchestrationApiUrl,
     shield,
     orchestrate,
     executionMode,

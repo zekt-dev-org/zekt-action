@@ -24,6 +24,10 @@ inputs:
     description: 'Enable end-to-end encryption of payload (requires consumers with Shield enabled)'
     required: false
     default: 'false'
+  orchestration-api-url:
+    description: 'Zekt API URL for orchestration endpoints (defaults to https://www.zekt.dev)'
+    required: false
+    default: 'https://www.zekt.dev'
   orchestrate:
     description: >
       When true, treat payload as a multi-step orchestration plan and POST to

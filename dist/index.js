@@ -30367,13 +30367,13 @@ async function runOrchestration(inputs, oidcToken) {
     }
     // 4. Submit orchestration
     core.info(`Submitting orchestration (${effectiveMode}, ${request.services.length} step(s)) ...`);
-    const submitResponse = await (0, api_client_1.submitOrchestration)(inputs.zektApiUrl, oidcToken, repository, request);
+    const submitResponse = await (0, api_client_1.submitOrchestration)(inputs.orchestrationApiUrl, oidcToken, repository, request);
     const executionId = submitResponse.execution_id;
     core.setOutput('execution_id', executionId);
     core.info(`✅ Orchestration submitted — execution_id: ${executionId}`);
     // 5. Optionally wait for completion
     if (inputs.wait) {
-        await pollUntilTerminal(inputs, oidcToken, repository, executionId);
+        await pollUntilTerminal(inputs.orchestrationApiUrl, oidcToken, repository, executionId);
     }
     // 6. Write job summary
     await writeOrchestrationSummary(executionId, request, inputs.wait);
@@ -30381,10 +30381,10 @@ async function runOrchestration(inputs, oidcToken) {
 // ============================================================================
 // Poll loop
 // ============================================================================
-async function pollUntilTerminal(inputs, oidcToken, repository, executionId) {
+async function pollUntilTerminal(apiUrl, oidcToken, repository, executionId) {
     core.info(`Polling orchestration status for ${executionId} (every 30s) ...`);
     while (true) {
-        const statusResponse = await (0, api_client_1.getOrchestrationStatus)(inputs.zektApiUrl, oidcToken, repository, executionId);
+        const statusResponse = await (0, api_client_1.getOrchestrationStatus)(apiUrl, oidcToken, repository, executionId);
         const status = statusResponse.status;
         if (TERMINAL_STATUSES.has(status)) {
             core.setOutput('execution_status', status);
@@ -30669,6 +30669,8 @@ function getActionInputs() {
     const payload = core.getInput('payload', { required: false }) || '{}';
     const zektApiUrl = core.getInput('zekt-api-url', { required: false }) ||
         'https://fxdevzektapp.azurewebsites.net';
+    const orchestrationApiUrl = core.getInput('orchestration-api-url', { required: false }) ||
+        'https://www.zekt.dev';
     const shieldInput = core.getInput('shield', { required: false });
     const orchestrateInput = core.getInput('orchestrate', { required: false });
     const executionMode = core.getInput('execution_mode', { required: false }) || 'sequential';
@@ -30680,6 +30682,7 @@ function getActionInputs() {
         eventType,
         payload,
         zektApiUrl,
+        orchestrationApiUrl,
         shield,
         orchestrate,
         executionMode,

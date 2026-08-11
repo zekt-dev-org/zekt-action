@@ -2,6 +2,7 @@ export interface ActionInputs {
     eventType: string;
     payload: string;
     zektApiUrl: string;
+    orchestrationApiUrl: string;
     shield: boolean;
     orchestrate: boolean;
     executionMode: string;
