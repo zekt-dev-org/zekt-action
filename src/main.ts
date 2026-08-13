@@ -24,11 +24,20 @@ export async function run(): Promise<void> {
     }
 
     // ── Standard (v2) path ──────────────────────────────────────────────────
-    if (!inputs.eventType) {
-      throw new Error('"event-type" input is required when orchestrate is false');
+    // Auto-detect orchestration context early — provider workflows reporting
+    // step outputs don't need event-type when _zekt context is present.
+    const orchestrationStepRef = readOrchestrationStepRef();
+    if (orchestrationStepRef) {
+      core.info(`🔗 Orchestration context detected — execution_id: ${orchestrationStepRef.execution_id}, step_id: ${orchestrationStepRef.step_id}`);
     }
 
-    core.info(`Event Type: ${inputs.eventType}`);
+    if (!inputs.eventType && !orchestrationStepRef) {
+      throw new Error('"event-type" input is required when orchestrate is false and not in orchestration context');
+    }
+
+    if (inputs.eventType) {
+      core.info(`Event Type: ${inputs.eventType}`);
+    }
     core.info(`Shield: ${inputs.shield}`);
 
     // 3. Parse payload
@@ -70,14 +79,9 @@ export async function run(): Promise<void> {
       }
     }
 
-    // 5. Build event request — auto-detect orchestration context for provider workflows
-    const orchestrationStepRef = readOrchestrationStepRef();
-    if (orchestrationStepRef) {
-      core.info(`🔗 Orchestration context detected — execution_id: ${orchestrationStepRef.execution_id}, step_id: ${orchestrationStepRef.step_id}`);
-    }
-
+    // 5. Build event request
     const eventRequest: EventRequest = {
-      eventType: inputs.eventType,
+      eventType: inputs.eventType || 'orchestration-step-output',
       repository: github.context.repo.owner + '/' + github.context.repo.repo,
       workflowRunId: github.context.runId.toString(),
       triggeredBy: github.context.actor,
