@@ -317,9 +317,89 @@ The action validates the orchestration payload **before** making any API call an
 - Any `input` is not a JSON object
 - `payload` is not valid JSON
 
-### Provider Workflow Integration (Automatic)
+### Provider Workflow: Reporting Outputs Back to Zekt
 
-Provider service workflows that call `zekt-action` via `repository_dispatch` **require no changes**. When running inside such a workflow, the action automatically reads the orchestration context (`client_payload._zekt`) from the GitHub event file and forwards it to the backend as `orchestration_step_ref`. This links the provider run to the correct orchestration step transparently.
+When Zekt dispatches an orchestration step to a provider repo, it sends a `repository_dispatch` event with this shape:
+
+```json
+{
+  "input": { "billing_account": "ba-123" },
+  "_zekt": {
+    "orchestration": {
+      "executionId": "exec-abc123",
+      "stepId": "create-sub",
+      "requestorRepository": "dev-team-org/dev-repo"
+    }
+  }
+}
+```
+
+The provider workflow reads its parameters from `client_payload.input`, does its work, then calls `zekt-action` with the output values in `payload`. **The action auto-detects the `_zekt` orchestration context and forwards it to the backend** — no `orchestrate: true` is used here.
+
+```yaml
+# .github/workflows/create-subscription.yml  (provider service repo)
+on:
+  repository_dispatch:
+    types: [new-azure-subscription-request]
+
+jobs:
+  create-subscription:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # required for zekt-action OIDC auth
+      contents: read
+
+    steps:
+      - name: Extract inputs
+        id: input
+        run: |
+          echo "billing_account=${{ github.event.client_payload.input.billing_account }}" \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Create Azure subscription
+        id: work
+        run: |
+          # ... real provisioning logic here ...
+          SUBSCRIPTION_ID="sub-$(date +%s)"
+          TENANT_ID="tenant-abc123"
+          echo "subscription_id=$SUBSCRIPTION_ID" >> "$GITHUB_OUTPUT"
+          echo "tenant_id=$TENANT_ID"             >> "$GITHUB_OUTPUT"
+
+      - name: Report outputs to Zekt
+        uses: zekt-dev-org/zekt-action@v3
+        with:
+          # No orchestrate: true — this is the provider reporting its output.
+          # zekt-action auto-detects _zekt.orchestration from the event file and
+          # forwards it as orchestration_step_ref so the backend can advance the chain.
+          payload: |
+            {
+              "subscription_id": "${{ steps.work.outputs.subscription_id }}",
+              "tenant_id":        "${{ steps.work.outputs.tenant_id }}"
+            }
+```
+
+The fields you put in `payload` become the step's outputs in the orchestration — available as `${{ steps.create-sub.outputs.subscription_id }}` in any downstream step's `input` on the consumer side.
+
+#### Supporting both orchestrated and direct dispatches
+
+If the provider workflow also needs to handle a direct (non-orchestrated) `repository_dispatch` where input arrives at the root of `client_payload` rather than under `.input`:
+
+```yaml
+      - name: Extract inputs (dual-mode)
+        id: input
+        run: |
+          if [ '${{ toJson(github.event.client_payload._zekt) }}' != 'null' ]; then
+            # Called via Zekt orchestration — input is under client_payload.input
+            echo "billing_account=${{ github.event.client_payload.input.billing_account }}" \
+              >> "$GITHUB_OUTPUT"
+          else
+            # Called directly — input is at the root of client_payload
+            echo "billing_account=${{ github.event.client_payload.billing_account }}" \
+              >> "$GITHUB_OUTPUT"
+          fi
+```
+
+The `zekt-action` report step at the end is identical in both cases — it silently skips `orchestration_step_ref` when there is no `_zekt` context present.
 
 ### API Endpoints Used
 
