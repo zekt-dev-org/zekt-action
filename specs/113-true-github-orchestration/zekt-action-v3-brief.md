@@ -118,8 +118,8 @@ outputs:
 
 The existing path calls `POST /api/zekt/register-run`. In v3, **one additive change** is
 made to this path: if the action detects it is running inside a `repository_dispatch`-triggered
-workflow, it reads `client_payload._zekt` from the GitHub event file and includes it as
-`orchestration_step_ref` in the request body.
+workflow, it reads `client_payload._zekt.orchestration` from the GitHub event file and
+sends a flat `orchestration_step_ref` object in the request body.
 
 **"Zero changes required" — scope:** This applies only to the `zekt-action` call at the
 end of the provider workflow (output reporting). The action auto-detects `_zekt` context
@@ -127,25 +127,70 @@ automatically. It does **not** mean the provider workflow can continue reading i
 parameters from an arbitrary path — see Section 7 for what an orchestration-compatible
 provider workflow looks like on the receive side.
 
+### 4.1 EXACT wire format the backend requires
+
+The backend `register-run` DTO (`RegisterRunOrchestrationRef`) expects a **flat,
+snake_case** object:
+
+```json
+{
+  "orchestration_step_ref": {
+    "execution_id": "exec-abc123",
+    "step_id": "create-sub"
+  }
+}
+```
+
+But Zekt dispatches the orchestration context inside `client_payload` as a **nested,
+camelCase** structure:
+
+```json
+{
+  "input": { ... },
+  "_zekt": {
+    "orchestration": {
+      "executionId": "exec-abc123",
+      "stepId": "create-sub",
+      "requestorRepository": "dev-team-org/dev-repo"
+    }
+  }
+}
+```
+
+The action **must** unwrap `_zekt.orchestration` and remap the two fields from camelCase
+to snake_case. `requestorRepository` is not sent to `register-run`. Sending the raw
+`_zekt` object verbatim will deserialize to a struct with empty `ExecutionId`/`StepId` and
+the backend will silently skip orchestration linking — this is the exact bug that will
+cause the step to remain stuck at `dispatching`.
+
+### 4.2 Reference bash implementation
+
 ```bash
 # Auto-detect orchestration context if triggered by repository_dispatch
-ORCH_CONTEXT="null"
+ORCH_REF="null"
 if [ "$GITHUB_EVENT_NAME" = "repository_dispatch" ]; then
-  ORCH_CONTEXT=$(jq -c '(.client_payload._zekt // empty)' "$GITHUB_EVENT_PATH")
-  # If _zekt is absent, ORCH_CONTEXT stays "null"
-  ORCH_CONTEXT="${ORCH_CONTEXT:-null}"
+  # Read _zekt.orchestration and remap camelCase → snake_case.
+  # If the field is absent (non-orchestrated dispatch), ORCH_REF stays "null".
+  ORCH_REF=$(jq -c '
+    (.client_payload._zekt.orchestration // empty)
+    | if . == null or . == "" then null
+      else { execution_id: .executionId, step_id: .stepId }
+      end
+  ' "$GITHUB_EVENT_PATH")
+  ORCH_REF="${ORCH_REF:-null}"
 fi
 
+# Build request body. Omit orchestration_step_ref entirely when null to keep the
+# request minimal (the backend treats null and absent as equivalent).
 REQUEST_BODY=$(jq -n \
   --arg run_id "$GITHUB_RUN_ID" \
   --argjson payload "$INPUT_PAYLOAD" \
-  --argjson orch_ctx "$ORCH_CONTEXT" \
+  --argjson orch_ref "$ORCH_REF" \
   '{
     zekt_run_id: ($run_id | tonumber),
     zekt_step_id: "default",
-    zekt_payload: $payload,
-    orchestration_step_ref: $orch_ctx
-  }')
+    zekt_payload: $payload
+  } + (if $orch_ref == null then {} else { orchestration_step_ref: $orch_ref } end)')
 
 curl -sf -X POST "$ZEKT_API_BASE/api/zekt/register-run" \
   -H "Authorization: Bearer $GITHUB_TOKEN" \
@@ -154,10 +199,36 @@ curl -sf -X POST "$ZEKT_API_BASE/api/zekt/register-run" \
   -d "$REQUEST_BODY"
 ```
 
-The `orchestration_step_ref` field is new in the `register-run` request body. When the
-provider service workflow is **not** part of an orchestration, `ORCH_CONTEXT` is `null`
-and the backend ignores it. When it **is** part of an orchestration, the backend uses it
-to link this workflow run to the correct orchestration step.
+### 4.3 Validation the action must perform
+
+After extracting `_zekt.orchestration`, verify **both** `executionId` and `stepId` are
+non-empty strings before constructing the ref. If either is missing/empty while the other
+is present, log a warning and send `orchestration_step_ref: null` (do not send a partial
+ref — the backend will accept it and then fail to advance the step).
+
+```bash
+# Optional defensive check inside the jq expression above
+if [ "$ORCH_REF" != "null" ]; then
+  EXEC_ID=$(echo "$ORCH_REF" | jq -r '.execution_id // empty')
+  STEP_ID=$(echo "$ORCH_REF" | jq -r '.step_id // empty')
+  if [ -z "$EXEC_ID" ] || [ -z "$STEP_ID" ]; then
+    echo "::warning::_zekt.orchestration present but incomplete — dropping orchestration_step_ref"
+    ORCH_REF="null"
+  fi
+fi
+```
+
+### 4.4 Backend behavior summary
+
+- `orchestration_step_ref` **absent** or `null` → treated as non-orchestrated (existing v2
+  behavior, backwards compatible).
+- `orchestration_step_ref` **present with both fields** → backend calls
+  `OrchestrationService.SetStepRunningAsync(execution_id, step_id, workflowRunId)`,
+  which advances the step from `dispatching` → `running` and stores the workflow run ID.
+  When `workflow_run.completed` later arrives, `WebhookReceiverFunction` looks up the
+  correlation and calls `AdvanceAsync` to dispatch the next step.
+- The `requestorRepository` field in `_zekt.orchestration` is informational only — the
+  backend already has this via the execution document. Do not send it to `register-run`.
 
 ---
 
@@ -495,9 +566,22 @@ optional. Existing inputs and outputs are untouched.
 
 **Step 2 — Provider-side auto-detection (non-orchestrated path)**  
 In the existing `entrypoint.sh` register-run call, add the `GITHUB_EVENT_PATH` read and
-`orchestration_step_ref` inclusion described in Section 4. This is the only change to the
-existing code path. Add a test that verifies a standard call without any event context
-still sends `orchestration_step_ref: null`.
+`orchestration_step_ref` construction described in Section 4.1–4.3. **Critical:** unwrap
+`_zekt.orchestration` and remap `executionId → execution_id`, `stepId → step_id`. Do NOT
+send the raw `_zekt` object verbatim.
+
+**Acceptance tests for Step 2:**
+
+1. **Standard `workflow_dispatch` call** — no event context: request body must NOT contain
+   `orchestration_step_ref` (or it may be `null`), and existing v2 behavior is preserved.
+2. **`repository_dispatch` without `_zekt`** — e.g., a manual `gh api ... /dispatches`
+   call: request body must NOT contain `orchestration_step_ref`.
+3. **`repository_dispatch` with valid `_zekt.orchestration`** — request body MUST contain
+   `orchestration_step_ref: { "execution_id": "exec-...", "step_id": "..." }` with exact
+   snake_case keys. Verify by mocking the Zekt API and asserting the received JSON.
+4. **`repository_dispatch` with partial `_zekt.orchestration`** (only `executionId`, no
+   `stepId`, or vice versa): request body must NOT contain `orchestration_step_ref` and a
+   `::warning::` line must be emitted.
 
 **Step 3 — Client-side payload validation (orchestration path)**  
 Before making any API call when `orchestrate: true`, validate that `payload` parses as
@@ -567,10 +651,19 @@ attempt to interpret it or split the two cases.
 
 ### 8.6 Backwards compatibility guarantee
 
-Adding `orchestration_step_ref: null` to all existing `register-run` calls (Section 4)
-is safe only if the backend tolerates this field being `null` when not in an orchestration.
-Confirm with the backend team before deploying — or conditionally omit the field entirely
-when `ORCH_CONTEXT` is null, using `jq`'s `if ... then ... else . end` to exclude the key.
+The backend tolerates `orchestration_step_ref` being either **absent** or explicitly
+`null` — both are treated identically as "non-orchestrated call". The reference
+implementation in Section 4.2 **omits** the field entirely when there is no orchestration
+context, which keeps request bodies minimal and matches the exact wire format the pre-v3
+`register-run` clients used.
+
+**Field mapping cheat sheet** (source → destination):
+
+| From `client_payload._zekt.orchestration` | → | `orchestration_step_ref` field |
+|---|---|---|
+| `executionId` (camelCase, string) | → | `execution_id` (snake_case, string) |
+| `stepId` (camelCase, string) | → | `step_id` (snake_case, string) |
+| `requestorRepository` | → | **not forwarded** — backend-only field |
 
 ### 8.7 GitHub token scope
 

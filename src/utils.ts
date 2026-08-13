@@ -40,6 +40,15 @@ export function getActionInputs(): ActionInputs {
  * Reads orchestration_step_ref from the GitHub event file when running inside
  * a repository_dispatch-triggered workflow that is part of an orchestration.
  * Returns null for all standard (non-orchestrated) runs.
+ *
+ * Wire format expected in client_payload._zekt.orchestration (camelCase):
+ *   { executionId: string, stepId: string, requestorRepository?: string }
+ * Returned ref (snake_case, per RegisterRunOrchestrationRef DTO):
+ *   { execution_id: string, step_id: string }
+ *
+ * If _zekt.orchestration exists but is missing/empty on either required field,
+ * a ::warning:: is emitted and null is returned (never send a partial ref —
+ * the backend would accept it and then fail to advance the step).
  */
 export function readOrchestrationStepRef(): OrchestrationStepRef | null {
   const eventName = process.env.GITHUB_EVENT_NAME;
@@ -49,23 +58,32 @@ export function readOrchestrationStepRef(): OrchestrationStepRef | null {
     return null;
   }
 
+  let event: unknown;
   try {
-    const raw = fs.readFileSync(eventPath, 'utf-8');
-    const event = JSON.parse(raw);
-    // _zekt.orchestration uses camelCase: executionId, stepId
-    const orch = event?.client_payload?._zekt?.orchestration;
-
-    if (
-      orch &&
-      typeof orch.executionId === 'string' &&
-      typeof orch.stepId === 'string'
-    ) {
-      return { execution_id: orch.executionId, step_id: orch.stepId };
-    }
+    event = JSON.parse(fs.readFileSync(eventPath, 'utf-8'));
   } catch {
-    // Non-fatal: if we can't read the event file, treat as non-orchestrated
+    return null;
   }
 
+  const orch = (event as { client_payload?: { _zekt?: { orchestration?: unknown } } })
+    ?.client_payload?._zekt?.orchestration;
+
+  if (!orch || typeof orch !== 'object') {
+    return null;
+  }
+
+  const executionId = (orch as { executionId?: unknown }).executionId;
+  const stepId = (orch as { stepId?: unknown }).stepId;
+  const hasExec = typeof executionId === 'string' && executionId.length > 0;
+  const hasStep = typeof stepId === 'string' && stepId.length > 0;
+
+  if (hasExec && hasStep) {
+    return { execution_id: executionId as string, step_id: stepId as string };
+  }
+
+  core.warning(
+    '_zekt.orchestration present but incomplete (executionId and stepId required) — dropping orchestration_step_ref'
+  );
   return null;
 }
 
