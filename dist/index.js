@@ -29933,7 +29933,7 @@ exports.submitOrchestration = submitOrchestration;
 exports.getOrchestrationStatus = getOrchestrationStatus;
 const http_client_1 = __nccwpck_require__(4844);
 function makeClient() {
-    return new http_client_1.HttpClient('zekt-action/3.0.6');
+    return new http_client_1.HttpClient('zekt-action/3.0.7');
 }
 function authHeaders(oidcToken, repository) {
     return {
@@ -30272,6 +30272,9 @@ const STEP_ID_RE = /^[a-zA-Z0-9_-]+$/;
 const SERVICE_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/;
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'timed_out']);
 const POLL_INTERVAL_MS = 30_000;
+// Pattern to detect GitHub Actions step references that get evaluated on the runner
+// before zekt-action ever sees them — these should use $zekt{{ steps.… }} instead.
+const BAD_TEMPLATE_PATTERN = /\$\{\{\s*steps\./;
 // ============================================================================
 // Payload validation
 // ============================================================================
@@ -30342,6 +30345,36 @@ function validateOrchestrationPayload(raw) {
     }
     return payload;
 }
+/**
+ * Recursively scan all string values for ${{ steps. patterns.
+ * GitHub Actions evaluates these on the runner (usually to empty string)
+ * before zekt-action runs — callers should use $zekt{{ steps.… }} instead.
+ */
+function scanForBadTemplatePatterns(value) {
+    if (typeof value === 'string') {
+        return BAD_TEMPLATE_PATTERN.test(value);
+    }
+    if (Array.isArray(value)) {
+        return value.some(scanForBadTemplatePatterns);
+    }
+    if (typeof value === 'object' && value !== null) {
+        return Object.values(value).some(scanForBadTemplatePatterns);
+    }
+    return false;
+}
+/**
+ * Emit a warning if any step input contains ${{ steps.… }} patterns.
+ * See spec Section 8.4 — these get collapsed to "" by GitHub Actions.
+ */
+function warnOnBadTemplatePatterns(payload) {
+    const hasIssue = payload.services.some(step => scanForBadTemplatePatterns(step.input));
+    if (hasIssue) {
+        core.warning('Your orchestration payload contains ${{ steps.… }} expressions. ' +
+            'GitHub Actions evaluates these on the runner (usually to an empty string) ' +
+            'before Zekt sees them. Use $zekt{{ steps.… }} for cross-step references. ' +
+            'See: https://github.com/zekt-dev-org/zekt-action#cross-step-output-references');
+    }
+}
 // ============================================================================
 // Main orchestration entry point
 // ============================================================================
@@ -30359,6 +30392,8 @@ async function runOrchestration(inputs, oidcToken) {
     // 2. Validate orchestration payload structure
     const orchestrationPayload = validateOrchestrationPayload(rawPayload);
     core.info(`✅ Orchestration payload validated — ${orchestrationPayload.services.length} step(s)`);
+    // 2a. Warn on ${{ steps.… }} patterns — GitHub Actions eats these before we see them
+    warnOnBadTemplatePatterns(orchestrationPayload);
     // 3. Build request — payload.execution_mode wins over the action input
     const effectiveMode = orchestrationPayload.execution_mode ?? inputs.executionMode;
     const request = {

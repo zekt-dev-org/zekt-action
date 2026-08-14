@@ -3,7 +3,26 @@
 **For:** The AI agent / developer working in the `zekt-dev-org/zekt-action` repository  
 **Relates to:** Zekt spec 113 — True GitHub Workflow Orchestration  
 **Status:** Ready for implementation  
-**Date:** 2026-08-08
+**Date:** 2026-08-08 (revised 2026-08-14)
+
+---
+
+## 0. Revision Log — Read This First
+
+**2026-08-14 (post-first-real-orchestration-run):** Four issues were observed in the
+first end-to-end orchestration run and are reflected in this revision. Two of them
+require concrete action inside `zekt-action`; the other two are backend-side and are
+mentioned here only so the AI agent knows what changed and does not attempt to
+re-implement them client-side.
+
+| # | Issue observed in production | Owner | Change in this brief |
+|---|---|---|---|
+| 1 | Cross-step template `${{ steps.N.outputs.X }}` collapsed to `""` before the action even ran — GitHub Actions evaluated it on the runner. All downstream steps received empty inputs and crashed. | **zekt-action + docs** | Section 8.4 rewritten. Prefer `$zekt{{ … }}` — GitHub Actions leaves it alone; the Zekt backend regex `\$(?:zekt)?\{\{ … \}\}` accepts both. Emit a warning when the caller uses the bare form. |
+| 2 | The consumer workflow that FAILS (e.g. PowerShell parser error) never calls back into `zekt-action`, so the orchestration step stayed in `dispatching` forever until the 24 h timeout. | **backend** | Backend now advances the step on `workflow_run.completed` with the observed conclusion — no action-side change needed. |
+| 3 | Consumer-only correlations produced a spurious `[Warning] ❌ Chainlink relay: No provider doc found` after every successful orchestration step. | **backend** | Backend marks the correlation `consumed` after `AdvanceAsync` from a step-output callback; Chainlink path now skips it. No action-side change. |
+| 4 | `orchestration_step_ref` mapping bug — sending the raw `_zekt` object verbatim instead of unwrapping `_zekt.orchestration` and remapping `executionId → execution_id`, `stepId → step_id`. | **zekt-action** | Already covered in Section 4.1 — reiterated here because it is the second most common way to break orchestration and has the same "step stuck at dispatching" symptom as #1. |
+
+Everything below applies. **Only #1 and #4 are action-side work.**
 
 ---
 
@@ -264,7 +283,7 @@ consumer services with `EventDirection: SubscriberFires` — the backend resolve
       "requested_by": "dev-team-a",
       "depends_on": ["create-sub"],
       "input": {
-        "subscription_id": "${{ steps.create-sub.outputs.subscription_id }}"
+        "subscription_id": "$zekt{{ steps.create-sub.outputs.subscription_id }}"
       }
     },
     {
@@ -273,7 +292,7 @@ consumer services with `EventDirection: SubscriberFires` — the backend resolve
       "requested_by": "dev-team-a",
       "depends_on": ["create-rg"],
       "input": {
-        "resource_group": "${{ steps.create-rg.outputs.resource_group_name }}"
+        "resource_group": "$zekt{{ steps.create-rg.outputs.resource_group_name }}"
       }
     }
   ]
@@ -282,10 +301,11 @@ consumer services with `EventDirection: SubscriberFires` — the backend resolve
 
 **Required fields per step:**
 - `step_id` — unique string within the request, alphanumeric + `_-`, max 64 chars.
-  Used in `depends_on` and in `${{ steps.STEP_ID.outputs.X }}` template expressions.
+  Used in `depends_on` and in `$zekt{{ steps.STEP_ID.outputs.X }}` template expressions.
+  See Section 8.4 for why the `$zekt` prefix is required in GitHub-Actions-authored payloads.
 - `service_slug` — the target service's slug. Regex: `^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$`
   (lowercase kebab-case, 2–64 chars).
-- `input` — any JSON object (may contain `${{ steps.STEP_ID.outputs.FIELD }}` strings).
+- `input` — any JSON object (may contain `$zekt{{ steps.STEP_ID.outputs.FIELD }}` strings).
 
 **Optional fields per step:**
 - `service_owner_name` — GitHub org name of the service owner. Required at either the
@@ -399,7 +419,7 @@ fi
             "step_id": "create-rg",
             "service_slug": "new-azure-resource-group",
             "depends_on": ["create-sub"],
-            "input": { "subscription_id": "${{ steps.create-sub.outputs.subscription_id }}" }
+            "input": { "subscription_id": "$zekt{{ steps.create-sub.outputs.subscription_id }}" }
           }
         ]
       }
@@ -476,10 +496,10 @@ event with this `client_payload` structure:
 }
 ```
 
-The `input` object contains the fully-resolved step input (template expressions like
-`${{ steps.N.outputs.X }}` are substituted by the Zekt backend before dispatch). The
-`_zekt` object is read automatically by `zekt-action` — the provider workflow does not
-need to touch it.
+The `input` object contains the fully-resolved step input (template expressions such as
+`$zekt{{ steps.N.outputs.X }}` — see Section 8.4 — are substituted by the Zekt backend
+before dispatch). The `_zekt` object is read automatically by `zekt-action` — the
+provider workflow does not need to touch it.
 
 ### 7.3 How to read input parameters
 
@@ -588,6 +608,15 @@ Before making any API call when `orchestrate: true`, validate that `payload` par
 valid JSON and contains a `services` array with 1–20 items. Check `step_id` uniqueness
 and `depends_on` references. Emit `::error::` lines and `exit 1` on any failure.
 
+**Step 3a — Placeholder-syntax scan (orchestration path) — new in 2026-08-14 revision**  
+After JSON-parse, walk every string value under `services[].input` (recursively). If any
+value contains a literal `${{ steps.` substring, emit a single `::warning::` line
+pointing to Section 8.4 and telling the caller to use `$zekt{{ steps.… }}` instead.
+Do NOT rewrite the payload — the caller may legitimately have `${{ github.* }}` or
+`${{ inputs.* }}` expressions inside the payload that GitHub Actions already resolved.
+Only the `steps.` prefix is the giveaway that this was intended as a cross-step Zekt
+reference and got clobbered by the runner. See Section 8.4 for the exact regex.
+
 **Step 4 — Submit orchestration call**  
 Implement the `POST /api/orchestration/submit` call (Section 5.2). Write `execution_id`
 to `$GITHUB_OUTPUT`. Log the execution ID to the step summary.
@@ -628,11 +657,91 @@ Do not add an internal timeout to the poll loop — that is the consumer's respo
 object. The rule: if `payload.execution_mode` exists, it wins. If not, fall back to the
 `execution_mode` action input. If neither is present, default to `"sequential"`.
 
-### 8.4 `${{ steps.N.outputs.FIELD }}` expressions in `input`
+### 8.4 Cross-step output references — **use `$zekt{{ … }}`, not `${{ … }}`**
 
-These template expressions in the consumer's payload are **not** resolved by the action.
-They are passed verbatim to the Zekt backend, which resolves them at dispatch time (after
-each dependent step completes). The action must not attempt to expand them client-side.
+> ⚠️ **This is the #1 source of "orchestration submitted, all inputs empty" bugs.**
+> Previous versions of this brief incorrectly implied `${{ steps.N.outputs.X }}` was
+> passed verbatim to the Zekt backend. It is NOT — GitHub Actions expands any
+> `${{ … }}` expression on the runner before the action ever executes, and
+> `steps.<orchestration-step-id>.outputs.*` refers to **runner-local** step outputs
+> that don't exist. The expression collapses to an empty string, which is what Zekt
+> receives and stores in `inputPayload`.
+
+Zekt requires a placeholder syntax that GitHub Actions does not evaluate. The backend
+(spec 113, `OrchestrationService.ResolveTemplatesAsync`) accepts two forms:
+
+| Syntax | GitHub Actions behavior | Use when |
+|---|---|---|
+| `$zekt{{ steps.STEP_ID.outputs.FIELD }}` | **Ignored** — passed through verbatim | Consumer workflows written in GitHub Actions (the common case) |
+| `${{ steps.STEP_ID.outputs.FIELD }}` | Evaluated on runner → becomes `""` | Server-to-server callers submitting orchestration plans from outside GitHub Actions (rare) |
+
+**Consumer-facing rule: always use `$zekt{{ … }}` inside your `payload`.** The `$zekt`
+prefix is a plain shell/YAML literal to GitHub — it isn't `${{ … }}` and so is left alone.
+
+**Correct example:**
+
+```yaml
+- uses: zekt-dev-org/zekt-action@v3
+  with:
+    orchestrate: true
+    wait: true
+    payload: |
+      {
+        "default_service_owner": "platform-team-org",
+        "services": [
+          {
+            "step_id": "create-sub",
+            "service_slug": "new-azure-subscription",
+            "input": { "billing_account": "ba-123" }
+          },
+          {
+            "step_id": "create-rg",
+            "service_slug": "new-azure-resource-group",
+            "depends_on": ["create-sub"],
+            "input": {
+              "subscription_id": "$zekt{{ steps.create-sub.outputs.subscription_id }}"
+            }
+          }
+        ]
+      }
+```
+
+**What the action must NOT do:**
+- Do NOT rewrite `${{ … }}` to `$zekt{{ … }}` — that would silently hide legitimate
+  GitHub Actions expressions (like `${{ inputs.name }}`) that the caller wants
+  evaluated on the runner. Only the caller knows which is which.
+- Do NOT expand `$zekt{{ … }}` client-side. Pass it through untouched.
+- Do NOT strip the `$zekt` prefix. The Zekt backend regex is
+  `\$(?:zekt)?\{\{\s*steps\.…\}\}` — it accepts both forms as-is.
+
+**Recommended: validate and warn.** After JSON-parsing the payload, scan every string
+value in every step's `input`. If any value contains a literal `${{ steps.` substring,
+emit a `::warning::` telling the user to change it to `$zekt{{ steps.` (unless they
+truly meant a runner-local expression, which is unusual inside an orchestration payload).
+
+```bash
+# Detect the common mistake and warn once per offending path.
+if echo "$INPUT_PAYLOAD" | jq -e '
+  [ .. | strings | select(test("\\$\\{\\{\\s*steps\\.")) ] | length > 0
+' >/dev/null; then
+  echo "::warning::Your orchestration payload contains \${{ steps.… }} expressions." \
+       "GitHub Actions will evaluate these on the runner (usually to an empty string)" \
+       "before Zekt sees them. Use \$zekt{{ steps.… }} for cross-step references."
+fi
+```
+
+**Backend caveats worth surfacing in the README:**
+
+- Templates whose referenced step has not completed → the dependent step fails with
+  `"Template reference to step 'X' failed: step not completed or has no outputs"`.
+  This is a caller bug (missing `depends_on`) — the action does not need to preflight.
+- Templates whose referenced output field is missing → same failure mode with
+  `"field not found"`. Same treatment.
+- Templates inside JSON string quotes (`"field": "$zekt{{ … }}"`) — the backend
+  substitutes the whole quoted token, preserving JSON validity. Standalone templates
+  in non-string positions (`"count": $zekt{{ … }}`) are supported but require the
+  referenced output to be a JSON scalar/object literal.
+
 
 ### 8.5 Error response handling
 
