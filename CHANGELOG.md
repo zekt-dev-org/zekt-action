@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-09-01
+
+### Changed
+- **Shield encryption is now genuinely hybrid.** Payload is encrypted once with AES-256-GCM; the 32-byte AES key is RSA-OAEP-SHA256 wrapped per consumer. Removes the ~446-byte RSA plaintext ceiling that made `shield: true` unusable for any real payload.
+- Shield envelope shape: `{ type, iv, authTag, ciphertext, recipients: { [consumerId]: wrappedKey } }` (standard base64). The `type` marker is unchanged, so the backend contract is preserved.
+- Fail-fast if `/api/shield/keys` returns zero keys (previously sent payload unencrypted with a warning).
+- Fail-fast if RSA wrapping fails for any consumer, surfacing the `consumerId` (previously continued on partial failure).
+
+### Removed
+- Obsolete "Payload too large for RSA encryption" error and "contact Zekt for hybrid encryption support" hint.
+- Internal `EncryptedRecipient` type and the `algorithm` / `version` envelope fields.
+
+### Inputs
+- No changes — `payload` and `shield: true` remain the only Shield-related inputs.
+
 ## [3.0.0] - 2026-08-08
 
 ### Added

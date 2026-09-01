@@ -29933,7 +29933,7 @@ exports.submitOrchestration = submitOrchestration;
 exports.getOrchestrationStatus = getOrchestrationStatus;
 const http_client_1 = __nccwpck_require__(4844);
 function makeClient() {
-    return new http_client_1.HttpClient('zekt-action/3.0.7');
+    return new http_client_1.HttpClient('zekt-action/3.1.0');
 }
 function authHeaders(oidcToken, repository) {
     return {
@@ -30154,18 +30154,11 @@ async function run() {
             const consumerKeys = await (0, shield_1.getConsumerKeys)(inputs.zektApiUrl, oidcToken, github.context.repo.owner + '/' + github.context.repo.repo);
             core.info(`📋 Retrieved ${consumerKeys.length} consumer keys`);
             if (consumerKeys.length === 0) {
-                core.warning('⚠️ No consumers have uploaded Shield public keys');
-                core.warning('   Consumers must upload public keys in Zekt dashboard: Settings > Shield/Consumer Keys');
-                core.warning('   Payload will be sent UNENCRYPTED');
-                core.warning('   If service requires Shield, backend will reject this payload');
-                // Continue without encryption - backend will enforce if needed
-                // finalPayload remains as payloadObject (unencrypted)
+                throw new Error('Shield encryption requested but no consumers have uploaded a public key. ' +
+                    'Upload consumer public keys in the Zekt dashboard (Settings > Shield/Consumer Keys) before enabling Shield.');
             }
-            else {
-                // Encrypt payload
-                finalPayload = await (0, shield_1.encryptPayload)(payloadObject, consumerKeys);
-                core.info('✅ Payload encrypted successfully');
-            }
+            finalPayload = await (0, shield_1.encryptPayload)(payloadObject, consumerKeys);
+            core.info('✅ Payload encrypted successfully');
         }
         // 5. Build event request
         const eventRequest = {
@@ -30577,79 +30570,53 @@ async function getConsumerKeys(apiUrl, oidcToken, repository) {
     return response.keys;
 }
 /**
- * Encrypt payload using direct RSA-OAEP encryption
- * Encrypts the entire payload for each consumer separately
+ * Encrypt payload using hybrid encryption:
+ *   1. AES-256-GCM encrypts the payload once (no size ceiling).
+ *   2. RSA-OAEP-SHA256 wraps the 32-byte AES key for each consumer.
+ * Fails fast on any per-consumer wrap failure — partial encryption would
+ * leave some consumers unable to decrypt.
  */
 async function encryptPayload(payload, consumerKeys) {
     if (!consumerKeys || consumerKeys.length === 0) {
         throw new Error('No consumer keys provided for encryption');
     }
-    // Serialize payload to JSON
     const payloadJson = JSON.stringify(payload);
     const payloadBuffer = Buffer.from(payloadJson, 'utf-8');
     core.info(`🔐 Encrypting payload (${payloadBuffer.length} bytes) for ${consumerKeys.length} consumer(s)`);
-    const recipients = [];
-    const errors = [];
+    // 1. Ephemeral AES-256 key + 12-byte IV
+    const aesKey = crypto.randomBytes(32);
+    const iv = crypto.randomBytes(12);
+    // 2. AES-256-GCM encrypt the payload once
+    const cipher = crypto.createCipheriv('aes-256-gcm', aesKey, iv);
+    const ciphertext = Buffer.concat([cipher.update(payloadBuffer), cipher.final()]);
+    const authTag = cipher.getAuthTag();
+    // 3. RSA-OAEP-SHA256 wrap the AES key per consumer
+    const recipients = {};
     for (const { consumerId, publicKey } of consumerKeys) {
+        if (!publicKey.includes('BEGIN PUBLIC KEY') || !publicKey.includes('END PUBLIC KEY')) {
+            throw new Error(`Failed to encrypt for ${consumerId}: invalid PEM format (missing BEGIN/END markers)`);
+        }
         try {
-            // Validate PEM format
-            if (!publicKey.includes('BEGIN PUBLIC KEY') || !publicKey.includes('END PUBLIC KEY')) {
-                throw new Error('Invalid PEM format: missing BEGIN/END markers');
-            }
-            // Import RSA public key from PEM
-            const publicKeyObject = crypto.createPublicKey({
+            const wrapped = crypto.publicEncrypt({
                 key: publicKey,
-                format: 'pem',
-                type: 'spki'
-            });
-            // Encrypt using RSA-OAEP with SHA-256
-            const encryptedBuffer = crypto.publicEncrypt({
-                key: publicKeyObject,
                 padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
-                oaepHash: 'sha256'
-            }, payloadBuffer);
-            // Encode to Base64
-            const encryptedPayload = encryptedBuffer.toString('base64');
-            recipients.push({
-                consumerId,
-                encryptedPayload
-            });
-            core.info(`   ✅ Encrypted for consumer: ${consumerId} (${encryptedBuffer.length} bytes)`);
+                oaepHash: 'sha256',
+            }, aesKey);
+            recipients[consumerId] = wrapped.toString('base64');
+            core.info(`   ✅ Wrapped AES key for consumer: ${consumerId}`);
         }
         catch (error) {
-            // Check for payload size error
-            if (error.message && error.message.includes('data too large')) {
-                const errorMsg = `Payload too large for RSA encryption (${payloadBuffer.length} bytes). ` +
-                    `Maximum: ~190 bytes (2048-bit key) or ~446 bytes (4096-bit key). ` +
-                    `Reduce payload size or contact Zekt for hybrid encryption support.`;
-                core.error(`   ❌ ${errorMsg}`);
-                errors.push(`${consumerId}: ${errorMsg}`);
-            }
-            else {
-                const errorMsg = `Failed to encrypt for ${consumerId}: ${error.message}`;
-                core.error(`   ❌ ${errorMsg}`);
-                errors.push(errorMsg);
-            }
-            // Continue to try other consumers even if one fails
-            // This allows partial delivery if some keys are invalid
+            throw new Error(`Failed to encrypt for ${consumerId}: ${error.message}`);
         }
     }
-    // If ALL encryptions failed, throw error
-    if (recipients.length === 0) {
-        throw new Error(`All encryption attempts failed:\n${errors.join('\n')}`);
-    }
-    // If SOME encryptions failed, log warning but continue
-    if (errors.length > 0) {
-        core.warning(`⚠️ Warning: ${errors.length} consumer(s) failed encryption, continuing with ${recipients.length} successful`);
-    }
-    // Build Shield envelope
     const envelope = {
         type: 'zekt-shield-envelope',
+        iv: iv.toString('base64'),
+        authTag: authTag.toString('base64'),
+        ciphertext: ciphertext.toString('base64'),
         recipients,
-        algorithm: 'RSA-OAEP',
-        version: '1.0'
     };
-    core.info(`✅ Shield envelope created with ${recipients.length} recipient(s)`);
+    core.info(`✅ Shield envelope created with ${Object.keys(recipients).length} recipient(s)`);
     return envelope;
 }
 

@@ -31,19 +31,15 @@ export interface ShieldKeysResponse {
 }
 
 // ============================================================================
-// Shield Envelope Types
+// Shield Envelope Types (hybrid: AES-256-GCM payload + RSA-OAEP wrapped key)
 // ============================================================================
-
-export interface EncryptedRecipient {
-  consumerId: string;
-  encryptedPayload: string; // Base64-encoded RSA-OAEP encrypted payload
-}
 
 export interface ShieldEnvelope {
   type: 'zekt-shield-envelope';
-  recipients: EncryptedRecipient[];
-  algorithm: 'RSA-OAEP';
-  version: '1.0';
+  iv: string;         // standard base64, 12 bytes
+  authTag: string;    // standard base64, 16 bytes
+  ciphertext: string; // standard base64, AES-256-GCM of UTF-8 JSON payload
+  recipients: Record<string, string>; // consumerId -> base64 RSA-OAEP-SHA256 wrapped AES key
 }
 
 // ============================================================================

@@ -8,7 +8,7 @@ import {
 } from './types';
 
 function makeClient(): HttpClient {
-  return new HttpClient('zekt-action/3.0.7');
+  return new HttpClient('zekt-action/3.1.0');
 }
 
 function authHeaders(oidcToken: string, repository: string): Record<string, string> {

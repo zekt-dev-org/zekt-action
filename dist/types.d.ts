@@ -18,15 +18,12 @@ export interface ConsumerKey {
 export interface ShieldKeysResponse {
     keys: ConsumerKey[];
 }
-export interface EncryptedRecipient {
-    consumerId: string;
-    encryptedPayload: string;
-}
 export interface ShieldEnvelope {
     type: 'zekt-shield-envelope';
-    recipients: EncryptedRecipient[];
-    algorithm: 'RSA-OAEP';
-    version: '1.0';
+    iv: string;
+    authTag: string;
+    ciphertext: string;
+    recipients: Record<string, string>;
 }
 export interface EventRequest {
     eventType: string;
