@@ -187,6 +187,7 @@ When `orchestrate: true`, the `payload` input must be a JSON object with a `serv
 | `services` | ✅ Yes | Ordered list of steps (1–20 items) |
 | `default_service_owner` | See note | GitHub org name used for any step that omits `service_owner_name` |
 | `execution_mode` | No | `"sequential"` (default). Overrides the `execution_mode` action input when set here. |
+| `strict_output_schema_resolution` | No | Boolean, default `false`. When `true`, a `$zekt{{ steps.X.outputs.Y }}` reference fails the step at dispatch time if `Y` is not declared in service X's published step-output schema. Must be a JSON boolean — the string `"true"` is rejected. See [Strict Output Schema Resolution](#strict-output-schema-resolution). |
 
 > **Owner resolution:** every step must have a service owner — either set directly on the step via `service_owner_name`, or inherited from the request-level `default_service_owner`. At least one of the two must be present.
 
@@ -316,6 +317,48 @@ The action validates the orchestration payload **before** making any API call an
 - A `depends_on` entry references a `step_id` that does not exist in the request
 - Any `input` is not a JSON object
 - `payload` is not valid JSON
+- `strict_output_schema_resolution` is present but is not a JSON boolean
+
+> **Backend advisories are surfaced as `::warning::` annotations.** After a successful submit, every entry in the response `warnings[]` array (e.g. target service missing `supportsOrchestration`, nested-timeout advisories, or a step referencing an output field the target service does not declare) is emitted to the workflow log. Warnings never fail the run.
+
+### Strict Output Schema Resolution
+
+Setting `strict_output_schema_resolution: true` at the top level of the payload makes the backend fail a step at dispatch time if any of its `$zekt{{ steps.X.outputs.Y }}` references names a field that service X has not declared in its published step-output schema — even when the value happens to be present in the run.
+
+Without the flag, the same plan submits with a `::warning::` advisory and runs, resolving the value from whatever the step actually reported.
+
+```yaml
+- name: Submit orchestration with strict output references
+  id: orch
+  uses: zekt-dev-org/zekt-action@v3
+  with:
+    orchestrate: true
+    payload: |
+      {
+        "default_service_owner": "platform-team-org",
+        "strict_output_schema_resolution": true,
+        "services": [
+          {
+            "step_id": "create-sub",
+            "service_slug": "new-azure-subscription",
+            "input": { "billing_account": "ba-123" }
+          },
+          {
+            "step_id": "create-rg",
+            "service_slug": "new-azure-resource-group",
+            "depends_on": ["create-sub"],
+            "input": {
+              "subscription_id": "$zekt{{ steps.create-sub.outputs.subscription_id }}"
+            }
+          }
+        ]
+      }
+```
+
+Notes:
+- Chosen per run by the requestor — never a service-side or backend default.
+- A service that has published **no** step-output schema is unaffected by the flag.
+- Independent of any per-service input validation — this flag governs only cross-step output references.
 
 ### Provider Workflow: Reporting Outputs Back to Zekt
 

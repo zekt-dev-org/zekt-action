@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-09-10
+
+### Added
+- **Forward `strict_output_schema_resolution` in the orchestration payload** (Zekt spec 115). Optional top-level boolean on the `orchestrate: true` payload — passed through verbatim to `POST /api/orchestration/submit`. When `true`, the backend fails a step at dispatch time if a `$zekt{{ steps.X.outputs.Y }}` reference names a field not declared in service X's published step-output schema. Defaults to `false` (unchanged resolution behavior). Rejects string coercions like `"true"` with a client-side error.
+- **Surface `warnings[]` from the submit response as `::warning::` annotations.** Every advisory the backend returns on a successful submit — missing `supportsOrchestration`, nested-timeout advisories, references to undeclared output fields — is now emitted to the workflow log. Never fails the run.
+
+### Changed
+- Agent user-agent string bumped to `zekt-action/3.2.0`.
+
+### Backward Compatibility
+✅ **100% backward compatible.** Payloads that omit `strict_output_schema_resolution` produce byte-identical request bodies, and a response with no `warnings` key produces no annotations.
+
 ## [3.1.0] - 2026-09-01
 
 ### Changed

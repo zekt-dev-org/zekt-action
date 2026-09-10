@@ -38,6 +38,19 @@ function validateOrchestrationPayload(raw: unknown): OrchestrationPayload {
     );
   }
 
+  // spec 115: strict_output_schema_resolution must be a JSON boolean when present.
+  // Reject truthy-string coercion — silently enabling a strict mode the caller
+  // cannot observe is worse than the field not existing.
+  if (
+    payload.strict_output_schema_resolution !== undefined &&
+    typeof payload.strict_output_schema_resolution !== 'boolean'
+  ) {
+    throw new Error(
+      '"strict_output_schema_resolution" must be a JSON boolean (got ' +
+        `${typeof payload.strict_output_schema_resolution}: ${JSON.stringify(payload.strict_output_schema_resolution)})`
+    );
+  }
+
   const knownStepIds = new Set<string>();
 
   for (let i = 0; i < payload.services.length; i++) {
@@ -183,6 +196,11 @@ export async function runOrchestration(inputs: ActionInputs, oidcToken: string):
   if (orchestrationPayload.default_service_owner) {
     request.default_service_owner = orchestrationPayload.default_service_owner;
   }
+  // Forward spec 115 flag verbatim; preserve false vs. absent (do not coerce).
+  if (orchestrationPayload.strict_output_schema_resolution !== undefined) {
+    request.strict_output_schema_resolution =
+      orchestrationPayload.strict_output_schema_resolution;
+  }
 
   // 4. Submit orchestration
   core.info(`Submitting orchestration (${effectiveMode}, ${request.services.length} step(s)) ...`);
@@ -196,6 +214,16 @@ export async function runOrchestration(inputs: ActionInputs, oidcToken: string):
   const executionId = submitResponse.execution_id;
   core.setOutput('execution_id', executionId);
   core.info(`✅ Orchestration submitted — execution_id: ${executionId}`);
+
+  // 4a. Surface backend advisories (spec 113/115). Never affects exit code.
+  //     Emit BEFORE the wait loop so wait: true callers see them immediately.
+  if (Array.isArray(submitResponse.warnings)) {
+    for (const w of submitResponse.warnings) {
+      if (typeof w === 'string' && w.length > 0) {
+        core.warning(`Zekt orchestration: ${w}`);
+      }
+    }
+  }
 
   // 5. Optionally wait for completion
   if (inputs.wait) {

@@ -29933,7 +29933,7 @@ exports.submitOrchestration = submitOrchestration;
 exports.getOrchestrationStatus = getOrchestrationStatus;
 const http_client_1 = __nccwpck_require__(4844);
 function makeClient() {
-    return new http_client_1.HttpClient('zekt-action/3.1.0');
+    return new http_client_1.HttpClient('zekt-action/3.2.0');
 }
 function authHeaders(oidcToken, repository) {
     return {
@@ -30282,6 +30282,14 @@ function validateOrchestrationPayload(raw) {
     if (payload.services.length > 20) {
         throw new Error(`Orchestration payload "services" array must have at most 20 items (got ${payload.services.length})`);
     }
+    // spec 115: strict_output_schema_resolution must be a JSON boolean when present.
+    // Reject truthy-string coercion — silently enabling a strict mode the caller
+    // cannot observe is worse than the field not existing.
+    if (payload.strict_output_schema_resolution !== undefined &&
+        typeof payload.strict_output_schema_resolution !== 'boolean') {
+        throw new Error('"strict_output_schema_resolution" must be a JSON boolean (got ' +
+            `${typeof payload.strict_output_schema_resolution}: ${JSON.stringify(payload.strict_output_schema_resolution)})`);
+    }
     const knownStepIds = new Set();
     for (let i = 0; i < payload.services.length; i++) {
         const step = payload.services[i];
@@ -30397,12 +30405,26 @@ async function runOrchestration(inputs, oidcToken) {
     if (orchestrationPayload.default_service_owner) {
         request.default_service_owner = orchestrationPayload.default_service_owner;
     }
+    // Forward spec 115 flag verbatim; preserve false vs. absent (do not coerce).
+    if (orchestrationPayload.strict_output_schema_resolution !== undefined) {
+        request.strict_output_schema_resolution =
+            orchestrationPayload.strict_output_schema_resolution;
+    }
     // 4. Submit orchestration
     core.info(`Submitting orchestration (${effectiveMode}, ${request.services.length} step(s)) ...`);
     const submitResponse = await (0, api_client_1.submitOrchestration)(inputs.orchestrationApiUrl, oidcToken, repository, request);
     const executionId = submitResponse.execution_id;
     core.setOutput('execution_id', executionId);
     core.info(`✅ Orchestration submitted — execution_id: ${executionId}`);
+    // 4a. Surface backend advisories (spec 113/115). Never affects exit code.
+    //     Emit BEFORE the wait loop so wait: true callers see them immediately.
+    if (Array.isArray(submitResponse.warnings)) {
+        for (const w of submitResponse.warnings) {
+            if (typeof w === 'string' && w.length > 0) {
+                core.warning(`Zekt orchestration: ${w}`);
+            }
+        }
+    }
     // 5. Optionally wait for completion
     if (inputs.wait) {
         await pollUntilTerminal(inputs.orchestrationApiUrl, oidcToken, repository, executionId);

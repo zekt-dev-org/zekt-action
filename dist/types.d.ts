@@ -59,16 +59,19 @@ export interface OrchestrationStep {
 export interface OrchestrationPayload {
     default_service_owner?: string;
     execution_mode?: string;
+    strict_output_schema_resolution?: boolean;
     services: OrchestrationStep[];
 }
 export interface SubmitOrchestrationRequest {
     workflow_run_id: number;
     execution_mode: string;
     default_service_owner?: string;
+    strict_output_schema_resolution?: boolean;
     services: OrchestrationStep[];
 }
 export interface SubmitOrchestrationResponse {
     execution_id: string;
+    warnings?: string[];
 }
 export interface OrchestrationStepStatus {
     step_id: string;
