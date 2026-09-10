@@ -25,6 +25,12 @@
       "maxLength": 128,
       "examples": ["platform-team-org"]
     },
+    "strict_output_schema_resolution": {
+      "type": "boolean",
+      "default": false,
+      "description": "Spec 115. When true, a $zekt{{ steps.X.outputs.Y }} reference fails the referencing step at dispatch time if Y is not declared in service X's published step-output schema — even when Y is present in that run's actual output. When false or absent, resolution is unchanged: a reference resolves from the actual output and fails only if the field is genuinely missing. A step whose target service publishes no step-output schema is unaffected either way, so enabling this does not require every service in the chain to have declared its outputs. Chosen per run by the requestor: it is never inferred from a service, never enabled by default, and is read fresh on each template resolution.",
+      "$comment": "Independent of the per-service SchemaEnforcementEnabled flag, which governs INPUT validation at dispatch. Conflating the two would tie a requestor's template policy to a provider's input policy."
+    },
     "services": {
       "type": "array",
       "description": "Ordered list of service steps to orchestrate. In sequential mode, each step runs after the previous one completes successfully.",
@@ -144,9 +150,10 @@
       ]
     },
     {
-      "$comment": "Concise form — default_service_owner set once, steps inherit it",
+      "$comment": "Concise form — default_service_owner set once, steps inherit it, with spec 115 strict output references enabled",
       "workflow_run_id": 987654322,
       "default_service_owner": "platform-team-org",
+      "strict_output_schema_resolution": true,
       "services": [
         {
           "step_id": "create-sub",

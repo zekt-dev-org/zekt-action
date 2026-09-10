@@ -24,6 +24,20 @@ re-implement them client-side.
 
 Everything below applies. **Only #1 and #4 are action-side work.**
 
+**2026-09-10 (Zekt spec 115 — Output Schema Registry landed backend-side):** Services can now
+publish a versioned **step-output schema** declaring the fields they report when they finish an
+orchestration step. Two action-side changes follow. Both are small, both are additive, and neither
+touches the `orchestrate: false` path.
+
+| # | Change | Owner | Section |
+|---|---|---|---|
+| 5 | **Surface `warnings[]` from the submit response.** The backend has always returned a `warnings` array on a successful submit (services missing `supportsOrchestration`, nested-timeout advisories) and the action has always thrown it away — Section 5.2's reference implementation reads only `.execution_id`. Spec 115 adds a third and more actionable kind: a step referencing an output field the target service does not declare. **Every one of these is invisible to the caller today.** | **zekt-action** | 5.2a |
+| 6 | **Forward `strict_output_schema_resolution`.** A new optional top-level field on the orchestration payload. The action's `jq` body builder is a four-key allowlist, so a caller who sets this today has it silently dropped and runs in lenient mode believing it is strict — a worse outcome than the field not existing. One line fixes it. | **zekt-action** | 5.1, 5.2 |
+
+**#5 is the one that matters.** #6 without #5 is a flag whose effects a caller cannot see; #5 without
+#6 still delivers most of spec 115's value, because the undeclared-reference warning is emitted on
+**every** submission regardless of the flag. If only one of the two gets done, do #5.
+
 ---
 
 ## 1. What Is This?
@@ -114,6 +128,14 @@ inputs:
     required: false
     default: 'false'
 ```
+
+**No input is added for `strict_output_schema_resolution` (spec 115) — this is deliberate.**
+It travels inside the `payload` object instead (Section 5.1), next to `default_service_owner`,
+because it is a property of *the plan* rather than of *this action call*. Two things follow from
+that: a plan pasted between workflows carries its own strictness with it, and there is no second
+place for the value to live and disagree with the payload — the `execution_mode` precedence rule
+in Section 8.3 exists only because that field has both an input and a payload key, and repeating
+that pattern for a boolean would be repeating a wart. Do not add an input for it.
 
 ### 3.2 New outputs
 
@@ -268,6 +290,7 @@ consumer services with `EventDirection: SubscriberFires` — the backend resolve
 ```json
 {
   "default_service_owner": "platform-team-org",
+  "strict_output_schema_resolution": false,
   "services": [
     {
       "step_id": "create-sub",
@@ -319,6 +342,12 @@ consumer services with `EventDirection: SubscriberFires` — the backend resolve
   `service_owner_name`. Simplifies the common case where a whole chain targets one org.
 - `execution_mode` — if present in the payload, it takes precedence over the
   `execution_mode` input; otherwise the input value is used. Accepted value: `"sequential"`.
+- `strict_output_schema_resolution` — boolean, default `false`. **New in spec 115.** When `true`,
+  a `$zekt{{ steps.X.outputs.Y }}` reference fails the referencing step at dispatch time if `Y`
+  is not *declared* in service X's published step-output schema — even when the value happens to
+  be present in this particular run. When `false` or omitted, resolution behaves exactly as it
+  always has. The action forwards it verbatim and interprets nothing; see Section 8.8 for the
+  semantics a caller needs to understand before switching it on.
 
 **Validation the action must perform client-side (before API call):**
 1. `services` array is present and has 1–20 items
@@ -329,12 +358,25 @@ consumer services with `EventDirection: SubscriberFires` — the backend resolve
 5. All `depends_on` references point to a `step_id` that exists in the request
 6. `input` is a valid JSON object on every step
 7. Parse error on the `payload` input → fail immediately with a human-readable message
+8. If `strict_output_schema_resolution` is present it is a JSON boolean — a string `"true"`
+   is a caller mistake worth failing on, because a truthy-string coercion would silently
+   enable a behavior change the caller cannot otherwise observe
+
+**If the action validates the payload against an allowlist of known top-level keys, add
+`strict_output_schema_resolution` to it.** A validator that rejects unknown keys will otherwise
+fail every payload using the new field, and one that silently strips them reproduces the exact
+bug this change is fixing.
 
 ### 5.2 What the action POSTs to the backend
 
 The action wraps the consumer's payload into the `SubmitOrchestrationRequest` body,
 forwarding all top-level fields (`default_service_owner`, `execution_mode` if set inside
-the payload) verbatim:
+the payload, `strict_output_schema_resolution`) verbatim.
+
+**This `jq` object is an allowlist, not a pass-through.** Any top-level key the caller writes that
+is not named here is dropped before the POST, with no error and no warning. That is why adding a
+new top-level payload field is always a change *here* as well as in the schema — see revision-log
+item #6.
 
 ```bash
 REQUEST_BODY=$(jq -n \
@@ -345,6 +387,7 @@ REQUEST_BODY=$(jq -n \
     workflow_run_id: ($run_id | tonumber),
     execution_mode: ($payload.execution_mode // $mode),
     default_service_owner: $payload.default_service_owner,
+    strict_output_schema_resolution: $payload.strict_output_schema_resolution,
     services: $payload.services
   } | with_entries(select(.value != null))')
 
@@ -357,6 +400,56 @@ RESPONSE=$(curl -sf -X POST "$ZEKT_API_BASE/api/orchestration/submit" \
 EXECUTION_ID=$(echo "$RESPONSE" | jq -r '.execution_id')
 echo "execution_id=$EXECUTION_ID" >> "$GITHUB_OUTPUT"
 ```
+
+The trailing `with_entries(select(.value != null))` already handles the absent case: a caller who
+omits `strict_output_schema_resolution` sends a body byte-identical to today's, and the backend
+defaults the field to `false`. No caller changes behavior by upgrading.
+
+### 5.2a Surfacing `warnings[]` from the submit response — **currently missing**
+
+A successful submit returns `201` with this shape. The reference implementation above reads only
+`.execution_id`, so **everything else — including `warnings` — is discarded today:**
+
+```jsonc
+{
+  "execution_id": "exec-2f1c…",
+  "status": "pending",
+  "total_steps": 3,
+  "submitted_at": "2026-09-10T09:14:22.1183367Z",
+  "warnings": [                       // ← absent when there are none; never present when empty
+    "Step 'create-rg' references 'create-sub.outputs.subscription_id', but service 'new-azure-subscription' does not declare 'subscription_id' in its published step-output schema (declared: sub_id, tenant_id). The reference will still be resolved from the actual output at runtime — this is advisory."
+  ],
+  "parent_execution_id": null,        // nested submissions only
+  "parent_step_id": null,
+  "depth": null
+}
+```
+
+Three kinds of warning arrive here, all advisory, none of which currently reach the caller:
+
+| Warning | Introduced by | Why the caller wants it |
+|---|---|---|
+| Target service has not declared `supportsOrchestration: true` | spec 113 | The workflow may not read `client_payload.input` or report outputs at all — the chain will probably hang. |
+| Nested orchestration inside a short-timeout parent step | spec 113 Addendum A | The parent step will time out under a perfectly healthy child chain. |
+| Step references an output field the target service does not declare | **spec 115** | The exact silent-breakage case spec 115 exists to catch: a provider renamed an output and nothing told the requestor. |
+
+**Required change** — emit each one as a GitHub Actions annotation so it lands in the run summary:
+
+```bash
+echo "$RESPONSE" | jq -r '.warnings // [] | .[]' | while IFS= read -r warning; do
+  [ -n "$warning" ] && echo "::warning::Zekt orchestration: $warning"
+done
+```
+
+Rules:
+- **Never fail on a warning.** These are advisory by backend design: a schema can lag the workflow
+  that produces the output, and a plan that warns is still a plan the caller asked to run. Exit
+  code is decided by the HTTP status (Section 8.5) and, when `wait: true`, by the terminal
+  execution status (Section 5.3) — never by this array.
+- Treat `warnings` as **optional and possibly absent**. The backend omits the key entirely rather
+  than sending `[]`, so `// []` in the `jq` expression is load-bearing.
+- Do not parse, classify or reformat the strings. They are written for a human reading a workflow
+  log and new kinds will be added without a version bump on this action.
 
 ### 5.3 Optional wait / poll loop (when `wait: true`)
 
@@ -451,6 +544,39 @@ fi
 
 > Step outputs are written to `$GITHUB_OUTPUT` as `step_{step_id}_outputs_{field}` — the
 > `step_id` is the caller-defined identifier from the payload, not the service slug.
+
+### 6.2a Strict step-output resolution (spec 115)
+
+```yaml
+- name: Submit orchestration with strict output references
+  id: orchestrate
+  uses: zekt-dev-org/zekt-action@v3
+  with:
+    orchestrate: true
+    payload: |
+      {
+        "default_service_owner": "platform-team-org",
+        "strict_output_schema_resolution": true,
+        "services": [
+          {
+            "step_id": "create-sub",
+            "service_slug": "new-azure-subscription",
+            "input": { "billing_account": "ba-123" }
+          },
+          {
+            "step_id": "create-rg",
+            "service_slug": "new-azure-resource-group",
+            "depends_on": ["create-sub"],
+            "input": { "subscription_id": "$zekt{{ steps.create-sub.outputs.subscription_id }}" }
+          }
+        ]
+      }
+```
+
+With the flag set, if `new-azure-subscription` does not declare `subscription_id` in its published
+step-output schema, `create-rg` fails at dispatch with an error naming the field and what the
+service *does* declare. Without it, the same plan submits with a `::warning::` (Section 5.2a) and
+runs — resolving `subscription_id` from whatever the step actually reported.
 
 ### 6.3 Standard non-orchestrated call — unchanged
 
@@ -626,9 +752,43 @@ Implement the optional poll loop (Section 5.3). Write `execution_status` and all
 `step_{id}_outputs_{field}` values to `$GITHUB_OUTPUT`. Exit with code 1 when status is
 not `completed`.
 
+**Step 5a — Surface backend warnings (orchestration path) — new in 2026-09-10 revision**  
+After a successful submit, emit every entry of `RESPONSE.warnings` as a `::warning::` annotation
+(Section 5.2a). Never change the exit code because of one. Do this **before** the wait loop, so a
+`wait: true` caller sees the advisories immediately rather than after the chain finishes.
+
+**Acceptance tests for Step 5a:**
+
+1. **Response with no `warnings` key** — no annotations emitted, no `jq` error, exit code unchanged.
+2. **Response with `warnings: []`** — same as above. (The backend omits the key rather than sending
+   an empty array, but the action must not depend on that.)
+3. **Response with two warnings** — exactly two `::warning::` lines, each carrying the backend's
+   string verbatim, and the step still succeeds with exit code 0.
+4. **Warning text containing quotes, `%`, and a newline** — annotation is emitted without breaking
+   the workflow log or truncating at the first special character.
+
+**Step 5b — Forward `strict_output_schema_resolution` — new in 2026-09-10 revision**  
+Add the one `jq` line in Section 5.2 and, if the action allowlists top-level payload keys, add it
+there too.
+
+**Acceptance tests for Step 5b:**
+
+1. **Payload omits the field** — request body must NOT contain `strict_output_schema_resolution`
+   (the `with_entries` filter drops it), byte-identical to a pre-change body.
+2. **Payload sets `true`** — request body MUST contain `"strict_output_schema_resolution": true`
+   as a JSON boolean, not the string `"true"`. Verify by mocking the Zekt API and asserting the
+   received JSON.
+3. **Payload sets `false`** — the field is forwarded as `false`, not dropped. (`with_entries`
+   filters on `!= null`, so `false` survives; a filter written as `select(.value)` would eat it —
+   this test exists to catch exactly that mistake.)
+4. **Payload sets the string `"true"`** — client-side validation fails with an `::error::`
+   explaining that a JSON boolean is required.
+
 **Step 6 — README updates**  
 Add an "Orchestration" section to the action README with the examples from Section 6.
-Clearly document the `orchestrate: true` requirement and the payload schema.
+Clearly document the `orchestrate: true` requirement and the payload schema. Include
+`strict_output_schema_resolution` (Section 6.2a) and note that submit-time warnings appear as
+workflow annotations.
 
 **Step 7 — Version bump to v3**  
 Update `action.yml` version references, tag, and the `v3` major version alias.
@@ -780,15 +940,46 @@ The same `GITHUB_TOKEN` used for existing `register-run` calls is used for orche
 submit and status poll. No additional token configuration is required from the consumer.
 The Zekt backend validates the token against the `X-GitHub-Repository` header.
 
+### 8.8 `strict_output_schema_resolution` — what the caller is opting into
+
+The action forwards this field and interprets nothing, so nothing below is action-side logic. It
+is here because the README (Step 6) has to explain it, and because an implementer who does not
+know what the flag does tends to "helpfully" default it, wrap it, or coerce it.
+
+**What it changes.** A `$zekt{{ steps.X.outputs.Y }}` reference is resolved by the backend at
+dispatch time, after step X completes. There have always been two ways it can be wrong:
+
+| | Flag off (default) | Flag on |
+|---|---|---|
+| `Y` missing from X's actual output at runtime | Step fails — *this has always been the behavior* | Step fails |
+| `Y` not declared in X's published step-output schema, but present at runtime | Resolves normally | **Step fails** with an error naming `Y` and the declared field list |
+| X publishes no step-output schema at all | Resolves normally | Resolves normally — nothing to check against |
+
+The third row is the important one: turning the flag on does **not** mean "every service must
+declare its outputs". A service that has published nothing is untouched. The flag only makes an
+*existing* declaration authoritative.
+
+**Who sets it and why it is per-run.** The requestor, in the plan. Not the provider: a provider
+flipping one bool must not be able to start hard-failing everyone downstream who referenced a field
+the provider forgot to declare. Not a backend default: a service that declares three fields but
+emits five would break every plan referencing the other two, even though those values are really
+there. Not a repo-wide setting: one plan can span several providers with wildly different schema
+maturity.
+
+**Common misreading to correct in the README:** the flag is not payload validation. It says nothing
+about whether the *values* a step reports match the schema's types — that check is separate, always
+on, always non-blocking, and shows up as `outputValidationWarnings` on the step in the Zekt portal.
+This flag is purely about whether a *reference* names something declared.
+
 ---
 
 ## 9. Key Files to Modify
 
 | File | Change |
 |---|---|
-| `action.yml` | Add 3 inputs, 2 outputs |
-| `entrypoint.sh` (or equivalent) | Branch on `INPUT_ORCHESTRATE`; add auto-detection for provider path |
-| `README.md` | New "Orchestration" section |
+| `action.yml` | Add 3 inputs, 2 outputs. **No input for spec 115** — see the note in Section 3.1 |
+| `entrypoint.sh` (or equivalent) | Branch on `INPUT_ORCHESTRATE`; add auto-detection for provider path; forward `strict_output_schema_resolution` in the submit body builder (5.2) and emit `warnings[]` as annotations (5.2a) |
+| `README.md` | New "Orchestration" section, including `strict_output_schema_resolution` (6.2a, 8.8) and the fact that submit-time advisories appear as workflow annotations |
 
 If the action uses a compiled language or bundled JS instead of shell, apply the same
 logic structure — the branching on `orchestrate`, the two API endpoints, and the poll loop
