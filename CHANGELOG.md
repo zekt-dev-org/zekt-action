@@ -26,6 +26,9 @@ Orchestration step conditions (spec 162). A step may be included or excluded bef
 - Every caller-supplied job-summary cell is HTML-escaped. `core.summary.addTable` does not escape cell text, and the new `condition` column carries free text.
 - User-agent bumped to `zekt-action/3.3.0`.
 
+### Fixed
+- **README: removed a stale duplicated v2 tail.** A second copy of Features / Quick Start / Inputs / Outputs from the v2.0.2 era sat below the current documentation, so the file carried two contradictory inputs tables and two outputs tables — the stale pair listed no orchestration inputs or outputs at all, still described `event-type` as always required, pinned examples to `@v2.0.2`, and claimed the action runs bash scripts on Ubuntu (it has been a Node action since 2.0.2). The v2 `Error Handling` example was the only section the current half lacked; it is kept, updated to `@v3`, under Standard Usage.
+
 ### Notes
 - `condition` is **not** validated client-side: the backend refuses a non-boolean with an error naming the step, and a copy of that rule here would refuse plans a later backend accepts. The rule this follows — validate on the client only what the backend cannot report back — is written up in `specs/162-orchestration-step-conditions/README.md`.
 - Backward compatible: `condition` is opt-in and absent means included, so an existing plan behaves exactly as before.
