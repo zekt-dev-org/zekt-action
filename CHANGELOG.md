@@ -27,6 +27,7 @@ Orchestration step conditions (spec 162). A step may be included or excluded bef
 - User-agent bumped to `zekt-action/3.3.0`.
 
 ### Fixed
+- **Request schema brought up to date** (`specs/113-true-github-orchestration/schemas/submit-orchestration-request.schema.json`). `OrchestrationStep` is `additionalProperties: false`, so it rejected fields the backend already accepts: `condition` and `condition_description` are now declared (with `dependentRequired` tying the description to the condition), along with `timeout_minutes` and `input_schema_version`, which the action has forwarded for some time without the schema listing them. `execution_mode` admits `parallel` and no longer describes it as reserved.
 - **README: removed a stale duplicated v2 tail.** A second copy of Features / Quick Start / Inputs / Outputs from the v2.0.2 era sat below the current documentation, so the file carried two contradictory inputs tables and two outputs tables — the stale pair listed no orchestration inputs or outputs at all, still described `event-type` as always required, pinned examples to `@v2.0.2`, and claimed the action runs bash scripts on Ubuntu (it has been a Node action since 2.0.2). The v2 `Error Handling` example was the only section the current half lacked; it is kept, updated to `@v3`, under Standard Usage.
 
 ### Notes

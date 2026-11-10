@@ -463,6 +463,11 @@ async function writeOrchestrationSummary(
 ): Promise<void> {
   const byId = new Map((finalStatus?.steps ?? []).map((s) => [s.step_id, s]));
 
+  // spec 162 (R1): conditions are opt-in, so a plan that uses none gets the
+  // summary it got in 3.2.0 — the column appears only once a step carries a
+  // condition. The status column stays a wait: true surface (F2).
+  const hasConditions = request.services.some((s) => s.condition !== undefined);
+
   // Every cell below is caller-supplied and would reach the summary as raw HTML
   // unless escaped here (see escapeHtml).
   const rows: string[][] = request.services.map((s) => {
@@ -470,8 +475,8 @@ async function writeOrchestrationSummary(
       s.step_id,
       s.service_slug,
       s.service_owner_name ?? request.default_service_owner ?? '',
-      conditionCell(s),
     ];
+    if (hasConditions) cells.push(conditionCell(s));
     if (waited) cells.push(statusCell(byId.get(s.step_id)));
     return cells.map(escapeHtml);
   });
@@ -480,8 +485,8 @@ async function writeOrchestrationSummary(
     { data: 'step_id', header: true },
     { data: 'service_slug', header: true },
     { data: 'owner', header: true },
-    { data: 'condition', header: true },
   ];
+  if (hasConditions) header.push({ data: 'condition', header: true });
   if (waited) header.push({ data: 'status', header: true });
 
   const overview: string[][] = [
@@ -492,7 +497,11 @@ async function writeOrchestrationSummary(
   ];
   if (finalStatus) {
     overview.push(['Execution Status', finalStatus.status]);
-    overview.push(['Excluded Steps', String(finalStatus.excluded_steps ?? 0)]);
+    // Only when something was actually excluded: an unconditioned plan's
+    // overview is the one it had before this release.
+    if ((finalStatus.excluded_steps ?? 0) > 0) {
+      overview.push(['Excluded Steps', String(finalStatus.excluded_steps)]);
+    }
   }
 
   await core.summary

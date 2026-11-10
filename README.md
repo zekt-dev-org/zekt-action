@@ -233,6 +233,10 @@ When `orchestrate: true`, the `payload` input must be a JSON object with a `serv
 | `condition` | No | JSON boolean (`true` / `false`) deciding whether the step is included. Evaluated by the GitHub runner before the action sees it — write the expression **unquoted**. See [Step Conditions](#step-conditions). |
 | `condition_description` | No | Display-only text shown with the condition in Zekt (max 200 chars). Never evaluated. Only allowed on a step that has a `condition`. |
 
+> **`condition` and `condition_description` are optional and opt-in.** A plan that omits them runs exactly as it did
+> on v3.2.0: the same request body, the same outputs, the same exit code, and a job summary with no `condition`
+> column. Nothing about conditions appears until a step carries one.
+
 ### Usage Examples
 
 #### Fire-and-Forget (no wait)

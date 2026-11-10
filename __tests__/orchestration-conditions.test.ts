@@ -439,6 +439,61 @@ describe('ZA6 — the job summary', () => {
   });
 });
 
+describe('R1 — conditions are opt-in, so an unconditioned plan is untouched', () => {
+  const plainPlan = {
+    default_service_owner: 'platform-team-org',
+    services: [
+      { step_id: 'build', service_slug: 'builder', input: { a: 1 } },
+      { step_id: 'ship', service_slug: 'shipper', input: {}, depends_on: ['build'] },
+    ],
+  };
+
+  it('shows no condition column and no Excluded Steps row', async () => {
+    apiClient.getOrchestrationStatus.mockResolvedValue({
+      execution_id: 'exec-xyz',
+      status: 'completed',
+      steps: [
+        { step_id: 'build', status: 'completed' },
+        { step_id: 'ship', status: 'completed' },
+      ],
+    });
+    await runOrchestration(inputs(plainPlan, true), 'token');
+
+    // The status column is a wait: true surface and stays (F2).
+    expect(stepsHeader()).toEqual(['step_id', 'service_slug', 'owner', 'status']);
+    const overview = (core.__tables[0] as string[][]).slice(1).map((r) => r[0]);
+    expect(overview).not.toContain('Excluded Steps');
+    expect(overview).toContain('Execution Status');
+  });
+
+  it('sends a request body that deep-equals the parsed services, with no condition key', async () => {
+    await runOrchestration(inputs(plainPlan), 'token');
+    const req = apiClient.submitOrchestration.mock.calls[0][3];
+    expect(req.services).toEqual(plainPlan.services);
+    for (const step of req.services) {
+      expect(Object.keys(step)).not.toContain('condition');
+      expect(Object.keys(step)).not.toContain('condition_description');
+    }
+  });
+
+  it('shows the condition column as soon as one step carries a condition', async () => {
+    const plan = {
+      default_service_owner: 'o',
+      services: [{ step_id: 'a', service_slug: 'svc', input: {}, condition: true }],
+    };
+    await runOrchestration(inputs(plan), 'token');
+    expect(stepsHeader()).toEqual(['step_id', 'service_slug', 'owner', 'condition']);
+    expect(stepsTable()[0][3]).toBe('true');
+  });
+
+  it('keeps the Excluded Steps row once something was excluded', async () => {
+    apiClient.getOrchestrationStatus.mockResolvedValue(conditionedStatus);
+    await runOrchestration(inputs(conditionedPlan, true), 'token');
+    const overview = (core.__tables[0] as string[][]).slice(1);
+    expect(overview).toContainEqual(['Excluded Steps', '2']);
+  });
+});
+
 describe('ZA7 — the ignored-condition warning', () => {
   it('warns once when a submitted condition is missing from the status entry', async () => {
     apiClient.getOrchestrationStatus.mockResolvedValue({

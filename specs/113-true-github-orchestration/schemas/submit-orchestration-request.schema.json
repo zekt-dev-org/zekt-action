@@ -14,9 +14,9 @@
     },
     "execution_mode": {
       "type": "string",
-      "enum": ["sequential"],
+      "enum": ["sequential", "parallel"],
       "default": "sequential",
-      "description": "Execution strategy. 'parallel' is reserved for Phase 3 — the dependsOn graph is persisted now but only evaluated in sequential order in Phase 1."
+      "description": "Execution strategy. 'sequential' dispatches each step after the previous one completes. 'parallel' dispatches every step whose dependencies are satisfied as soon as they are satisfied, following the depends_on graph."
     },
     "default_service_owner": {
       "type": "string",
@@ -45,6 +45,9 @@
       "description": "One step in the orchestration chain. The (service_owner_name, service_slug) tuple uniquely resolves to either a provider ServiceDescription or a consumer ConsumerServiceDescription (SubscriberFires direction only). Consumer services with EventDirection: OwnerFires cannot be orchestration targets.",
       "required": ["step_id", "service_slug", "input"],
       "additionalProperties": false,
+      "dependentRequired": {
+        "condition_description": ["condition"]
+      },
       "properties": {
         "step_id": {
           "type": "string",
@@ -84,6 +87,29 @@
           },
           "default": [],
           "uniqueItems": true
+        },
+        "condition": {
+          "type": "boolean",
+          "description": "Spec 162. Whether this step is part of the execution at all. Absent means the step is included and the plan behaves exactly as it did before conditions existed. true includes the step; false excludes it, along with every step that depends on it — transitively, through either a depends_on entry or a $zekt{{ steps.X.outputs.Y }} reference to it. An excluded step is never dispatched, holds no approval gate, costs nothing, and is not a failure: an execution whose steps are all completed or excluded ends 'completed'. Must be a JSON boolean; a string, a number or null is refused with an error naming the step.",
+          "$comment": "Never evaluated by Zekt. The value is a GitHub expression the consumer's runner has already evaluated, which is why it must arrive as a literal boolean — write \"condition\": ${{ <expression> }} unquoted in the workflow. Zekt-side expressions, and conditions over another step's outputs, are deliberately out of scope: a value that does not exist until dispatch time cannot be decided at submit."
+        },
+        "condition_description": {
+          "type": "string",
+          "description": "Spec 162. Display-only text shown with the condition in the Zekt console and in zekt-action's job summary. Never evaluated and never acted on. Only allowed on a step that also carries 'condition' — a description of a condition that does not exist is a plan mistake, and is refused.",
+          "maxLength": 200,
+          "examples": ["Only for production subscriptions"]
+        },
+        "timeout_minutes": {
+          "type": "integer",
+          "description": "Maximum time this step may take, in minutes, before the orchestration treats it as timed out.",
+          "minimum": 1,
+          "maximum": 1440
+        },
+        "input_schema_version": {
+          "type": "string",
+          "description": "Semantic version of the target service's input schema that this step's 'input' was written against.",
+          "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
+          "examples": ["1.0.0", "2.1.3"]
         },
         "input": {
           "type": "object",
