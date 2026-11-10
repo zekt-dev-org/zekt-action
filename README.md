@@ -68,6 +68,17 @@ jobs:
 | `execution_id` | `orchestrate: true` | Orchestration execution ID (e.g. `exec-{uuid}`) |
 | `execution_status` | `orchestrate: true` + `wait: true` | Terminal status: `completed` \| `failed` \| `timed_out` |
 | `step_{step_id}_outputs_{field}` | `orchestrate: true` + `wait: true` | Individual step output values |
+| `step_{step_id}_status` | `orchestrate: true` + `wait: true` | Terminal status of that step: `completed` \| `excluded` \| `failed` \| `skipped` \| `timed_out` |
+| `excluded_steps` | `orchestrate: true` + `wait: true` | Number of steps excluded by their conditions. Always written — `0` when none were |
+
+> **Step ids with a dash need bracket access.** A `step_id` may contain `-`, which a dotted expression cannot
+> address: write `${{ steps.zekt.outputs['step_my-step_status'] }}`, not
+> `${{ steps.zekt.outputs.step_my-step_status }}`. The same applies to
+> `step_{step_id}_outputs_{field}`.
+>
+> A `step_id` may also contain `_`, which means two different steps can in principle produce the same
+> `step_{step_id}_outputs_{field}` name (step `a_outputs_b` with no outputs, and step `a` with a field `b`). That
+> ambiguity predates these outputs and `step_{step_id}_status` does not widen it; avoid `_outputs_` inside a step id.
 
 ---
 
@@ -201,6 +212,8 @@ When `orchestrate: true`, the `payload` input must be a JSON object with a `serv
 | `service_owner_name` | See note | GitHub org name of the service owner. Overrides `default_service_owner` for this step. |
 | `requested_by` | No | Informational team name (max 256 chars). Never used for auth or routing. |
 | `depends_on` | No | Array of `step_id` values that must complete before this step is dispatched. Omit for linear chains — Zekt infers sequential ordering automatically. |
+| `condition` | No | JSON boolean (`true` / `false`) deciding whether the step is included. Evaluated by the GitHub runner before the action sees it — write the expression **unquoted**. See [Step Conditions](#step-conditions). |
+| `condition_description` | No | Display-only text shown with the condition in Zekt (max 200 chars). Never evaluated. Only allowed on a step that has a `condition`. |
 
 ### Usage Examples
 
@@ -319,7 +332,81 @@ The action validates the orchestration payload **before** making any API call an
 - `payload` is not valid JSON
 - `strict_output_schema_resolution` is present but is not a JSON boolean
 
+A step's `condition` is deliberately **not** checked here — the backend refuses a non-boolean with an error naming the
+step, and a check in the action would refuse plans a later backend accepts. See [Step Conditions](#step-conditions).
+
 > **Backend advisories are surfaced as `::warning::` annotations.** After a successful submit, every entry in the response `warnings[]` array (e.g. target service missing `supportsOrchestration`, nested-timeout advisories, or a step referencing an output field the target service does not declare) is emitted to the workflow log. Warnings never fail the run.
+
+### Step Conditions
+
+A step may carry a `condition`: a JSON boolean that decides whether the step is part of the execution at all. The
+condition is evaluated **by the GitHub runner**, before this action parses the payload, so it is an ordinary GitHub
+expression — and it must be written **without quotes**, so that it renders as a JSON boolean rather than a string:
+
+```yaml
+- name: Submit orchestration
+  uses: zekt-dev-org/zekt-action@v3
+  with:
+    orchestrate: true
+    wait: true
+    payload: |
+      {
+        "default_service_owner": "platform-team-org",
+        "services": [
+          { "step_id": "build", "service_slug": "builder", "input": {} },
+          {
+            "step_id": "scan",
+            "service_slug": "security-scanner",
+            "input": {},
+            "condition": ${{ inputs.region == 'westeurope' }},
+            "condition_description": "Only for production subscriptions"
+          },
+          { "step_id": "ship", "service_slug": "shipper", "input": {}, "depends_on": ["scan"] }
+        ]
+      }
+```
+
+**Vocabulary.** A step with a `condition` is **conditioned**. It ends up **included** (`true`) or **excluded**
+(`false`). An excluded step is never called "skipped" — `skipped` is what a step becomes when an *earlier* step
+failed, which is a different thing entirely.
+
+**An excluded step is not a failure.** Nothing is dispatched for it, it holds no approval gate, it costs nothing, and
+an execution whose steps are all completed or excluded ends `completed`. The action logs one info line per excluded
+step — never a warning or an error — and the exit code is unaffected.
+
+**Exclusion cascades.** Everything that depends on an excluded step is excluded too, transitively, with
+`exclusion_reason: dependency_excluded`. Dependencies count both ways round:
+
+- an explicit `depends_on` entry naming the excluded step, and
+- a `$zekt{{ steps.X.outputs.Y }}` reference to it, even with no `depends_on` at all.
+
+In the example above, excluding `scan` also excludes `ship`.
+
+**Sequential mode passes over an excluded step.** A step with no `depends_on` of its own depends on the nearest
+earlier step that is included. `build → scan (false) → ship` runs `build`, then `ship`.
+
+**Reading the result.** With `wait: true`, every step gets a `step_{step_id}_status` output (`excluded` for an
+excluded one) and `excluded_steps` carries the count. This matters because an excluded step writes no
+`step_{step_id}_outputs_*` values, which on its own is indistinguishable from a step that ran and reported nothing.
+On a fire-and-forget run, a plan whose every step was excluded is reported in the log; no outputs are written,
+because outputs are a `wait: true` surface.
+
+**Validation lives in the backend.** `condition` must be a JSON boolean: Zekt refuses a string, a number or `null`
+with an error naming the step, which this action surfaces verbatim. Two mistakes get an extra hint from the action
+because only it can see them:
+
+- `"condition": "${{ … }}"` (quoted) renders as the *string* `"false"` — the error gains "Remove the quotes around
+  the expression."
+- an expression that renders to nothing leaves `"condition": ,` behind, which is not valid JSON at all. The payload
+  never reaches Zekt, and the parse error explains that the expression produced nothing.
+
+**Not supported.** Conditions are booleans the caller has already evaluated. Zekt-side expressions, and conditions
+over another step's outputs, are not part of this feature — the runner cannot see a value that does not exist until
+dispatch time.
+
+> **Not the same as an approval gate's "conditions".** Approval gates on a service are a separate mechanism with an
+> unfortunate name overlap: a gate holds an *included* step until someone approves it, while a condition decides
+> whether the step exists in the execution at all. An excluded step reaches no gate.
 
 ### Strict Output Schema Resolution
 

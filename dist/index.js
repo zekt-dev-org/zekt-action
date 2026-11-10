@@ -29933,7 +29933,7 @@ exports.submitOrchestration = submitOrchestration;
 exports.getOrchestrationStatus = getOrchestrationStatus;
 const http_client_1 = __nccwpck_require__(4844);
 function makeClient() {
-    return new http_client_1.HttpClient('zekt-action/3.2.0');
+    return new http_client_1.HttpClient('zekt-action/3.3.0');
 }
 function authHeaders(oidcToken, repository) {
     return {
@@ -30268,6 +30268,19 @@ const POLL_INTERVAL_MS = 30_000;
 // Pattern to detect GitHub Actions step references that get evaluated on the runner
 // before zekt-action ever sees them — these should use $zekt{{ steps.… }} instead.
 const BAD_TEMPLATE_PATTERN = /\$\{\{\s*steps\./;
+// spec 162 (ZA4): a GitHub expression that renders to nothing leaves
+// `"condition": ,` or `"condition": }` behind, which is invalid JSON — the
+// submit fails in JSON.parse, before Core ever sees the plan. This is the one
+// condition failure only the action can explain.
+const CONDITION_EMPTY_RENDER_RE = /"condition"\s*:\s*[,}\]]/;
+const CONDITION_EMPTY_RENDER_HINT = "A step's `condition` rendered empty: the GitHub expression produced nothing. " +
+    'Write `"condition": ${{ <expression> }}` without quotes, using an expression ' +
+    'that gives true or false.';
+// spec 162 (ZA8): a quoted `"condition": "${{ … }}"` renders as the string
+// "false", which Core refuses by name (D9). Appended only once Core has actually
+// refused, so a later Core that accepts other condition types never produces a
+// false alarm in a pinned workflow.
+const CONDITION_QUOTED_HINT = 'Remove the quotes around the expression.';
 // ============================================================================
 // Payload validation
 // ============================================================================
@@ -30377,6 +30390,96 @@ function warnOnBadTemplatePatterns(payload) {
     }
 }
 // ============================================================================
+// Helpers
+// ============================================================================
+/**
+ * core.summary.addTable wraps cell text in <td> without escaping it
+ * (@actions/core summary.js). Caller-supplied values therefore reach the job
+ * summary as HTML. spec 162 (ZA6) adds a free-text column
+ * (condition_description), so every caller-supplied cell is escaped here.
+ */
+function escapeHtml(value) {
+    return value
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+/** The `condition` cell: the boolean as submitted, with its description after it. */
+function conditionCell(step) {
+    if (step.condition === undefined || step.condition === null)
+        return '';
+    const value = step.condition ? 'true' : 'false';
+    const description = step.condition_description;
+    return description ? `${value} — ${description}` : value;
+}
+/**
+ * The `status` cell, from the final status response. An excluded step reads as
+ * excluded and never as failed (P2); a cascade names the step that excluded it.
+ */
+function statusCell(entry) {
+    if (!entry)
+        return '';
+    if (entry.status !== 'excluded')
+        return entry.status;
+    if (entry.exclusion_reason === 'dependency_excluded' && entry.excluded_by) {
+        return `excluded (by ${entry.excluded_by})`;
+    }
+    return 'excluded';
+}
+/** spec 162 (ZA5): one info line per excluded step. Never a warning or an error. */
+function logExclusions(steps) {
+    for (const step of steps) {
+        if (step.status !== 'excluded')
+            continue;
+        if (step.exclusion_reason === 'condition_false') {
+            core.info(`step '${step.step_id}' excluded by its condition`);
+        }
+        else if (step.exclusion_reason === 'dependency_excluded') {
+            core.info(`step '${step.step_id}' excluded because '${step.excluded_by}' was excluded by its condition`);
+        }
+        else {
+            // A reason Core adds later still gets reported verbatim (F1).
+            core.info(`step '${step.step_id}' excluded (${step.exclusion_reason ?? 'no reason given'})`);
+        }
+    }
+}
+/**
+ * spec 162 (ZA7): a backend that predates conditions stores none, so its status
+ * entries carry no `condition` and every step ran. That is the one silent
+ * failure this feature has, and it is invisible without this check.
+ * Absent and null are the same thing here — a cascade-excluded step reports
+ * `condition: null` — so a submitted step is only compared when it had one.
+ */
+function warnIfConditionsIgnored(request, steps) {
+    const byId = new Map(steps.map((s) => [s.step_id, s]));
+    const ignored = request.services.some((submitted) => {
+        if (submitted.condition === undefined || submitted.condition === null)
+            return false;
+        const entry = byId.get(submitted.step_id);
+        return entry !== undefined && entry.condition == null;
+    });
+    if (ignored) {
+        core.warning("Zekt ignored the steps' `condition` fields: this backend predates conditions, " +
+            'so every step ran.');
+    }
+}
+/**
+ * spec 162 (ZA8): Core refuses a non-boolean condition by name. When the step's
+ * submitted value was a string, the cause is almost always a quoted expression,
+ * which the runner renders to "true"/"false" — a string, not a boolean.
+ */
+function decorateConditionError(err, request) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    if (!/invalid condition/i.test(error.message))
+        return error;
+    const quoted = request.services.some((s) => typeof s.condition === 'string');
+    if (!quoted)
+        return error;
+    return new Error(`${error.message} ${CONDITION_QUOTED_HINT}`);
+}
+// ============================================================================
 // Main orchestration entry point
 // ============================================================================
 async function runOrchestration(inputs, oidcToken) {
@@ -30388,7 +30491,12 @@ async function runOrchestration(inputs, oidcToken) {
     }
     catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        throw new Error(`Orchestration payload is not valid JSON: ${msg}`);
+        // spec 162 (ZA4): an empty-rendered condition breaks the JSON here, and the
+        // raw parse error alone sends the caller looking in the wrong place.
+        const hint = CONDITION_EMPTY_RENDER_RE.test(inputs.payload)
+            ? ` ${CONDITION_EMPTY_RENDER_HINT}`
+            : '';
+        throw new Error(`Orchestration payload is not valid JSON: ${msg}${hint}`);
     }
     // 2. Validate orchestration payload structure
     const orchestrationPayload = validateOrchestrationPayload(rawPayload);
@@ -30412,7 +30520,13 @@ async function runOrchestration(inputs, oidcToken) {
     }
     // 4. Submit orchestration
     core.info(`Submitting orchestration (${effectiveMode}, ${request.services.length} step(s)) ...`);
-    const submitResponse = await (0, api_client_1.submitOrchestration)(inputs.orchestrationApiUrl, oidcToken, repository, request);
+    let submitResponse;
+    try {
+        submitResponse = await (0, api_client_1.submitOrchestration)(inputs.orchestrationApiUrl, oidcToken, repository, request);
+    }
+    catch (err) {
+        throw decorateConditionError(err, request);
+    }
     const executionId = submitResponse.execution_id;
     core.setOutput('execution_id', executionId);
     core.info(`✅ Orchestration submitted — execution_id: ${executionId}`);
@@ -30425,35 +30539,63 @@ async function runOrchestration(inputs, oidcToken) {
             }
         }
     }
-    // 5. Optionally wait for completion
-    if (inputs.wait) {
-        await pollUntilTerminal(inputs.orchestrationApiUrl, oidcToken, repository, executionId);
+    // 4b. spec 162 (ZA5): every step excluded means Core completed the execution at
+    //     submit and dispatched nothing. Say so on a fire-and-forget run — there is
+    //     no poll to report it — but change no output: outputs stay wait: true only.
+    if (!inputs.wait && submitResponse.status === 'completed') {
+        core.info(`All ${request.services.length} steps were excluded by their conditions; nothing was sent.`);
     }
-    // 6. Write job summary
-    await writeOrchestrationSummary(executionId, request, inputs.wait);
+    // 5. Optionally wait for completion
+    let finalStatus;
+    if (inputs.wait) {
+        finalStatus = await pollUntilTerminal(inputs.orchestrationApiUrl, oidcToken, repository, executionId, request);
+    }
+    // 6. Write job summary — before the throw below (F2), so a failed or timed-out
+    //    orchestration has a summary too. It is the surface a human reads to see
+    //    which step ended how, which is exactly the failing case.
+    await writeOrchestrationSummary(executionId, request, inputs.wait, finalStatus);
+    // 7. A non-completed terminal status fails the run, now that the summary exists.
+    if (finalStatus && finalStatus.status !== 'completed') {
+        core.error(`Orchestration ${executionId} ended with status: ${finalStatus.status}`);
+        throw new Error(`Orchestration ended with status: ${finalStatus.status}`);
+    }
 }
 // ============================================================================
 // Poll loop
 // ============================================================================
-async function pollUntilTerminal(apiUrl, oidcToken, repository, executionId) {
+/**
+ * Polls until the execution reaches a terminal status and returns that status
+ * response. Deliberately does not throw on a failed execution: the caller writes
+ * the job summary from this response first, then fails the run (F2).
+ */
+async function pollUntilTerminal(apiUrl, oidcToken, repository, executionId, request) {
     core.info(`Polling orchestration status for ${executionId} (every 30s) ...`);
     while (true) {
         const statusResponse = await (0, api_client_1.getOrchestrationStatus)(apiUrl, oidcToken, repository, executionId);
         const status = statusResponse.status;
         if (TERMINAL_STATUSES.has(status)) {
             core.setOutput('execution_status', status);
+            const steps = statusResponse.steps ?? [];
             // Write each step's outputs as step_{step_id}_outputs_{field}=value
-            for (const step of statusResponse.steps ?? []) {
+            for (const step of steps) {
                 for (const [field, value] of Object.entries(step.outputs ?? {})) {
                     core.setOutput(`step_${step.step_id}_outputs_${field}`, String(value));
                 }
             }
-            if (status !== 'completed') {
-                core.error(`Orchestration ${executionId} ended with status: ${status}`);
-                throw new Error(`Orchestration ended with status: ${status}`);
+            // spec 162 (ZA5): a step's status, so a workflow can tell an excluded step
+            // from one that ran and reported nothing — both write no outputs.
+            for (const step of steps) {
+                core.setOutput(`step_${step.step_id}_status`, step.status);
             }
-            core.info(`✅ Orchestration completed — execution_id: ${executionId}`);
-            return;
+            // Always present under wait: an unset output and an empty one are the same
+            // thing in a workflow expression, so "0" is the only usable contract.
+            core.setOutput('excluded_steps', String(statusResponse.excluded_steps ?? 0));
+            logExclusions(steps);
+            warnIfConditionsIgnored(request, steps);
+            if (status === 'completed') {
+                core.info(`✅ Orchestration completed — execution_id: ${executionId}`);
+            }
+            return statusResponse;
         }
         core.info(`Status: ${status} — waiting 30s ...`);
         await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
@@ -30462,12 +30604,39 @@ async function pollUntilTerminal(apiUrl, oidcToken, repository, executionId) {
 // ============================================================================
 // Job summary
 // ============================================================================
-async function writeOrchestrationSummary(executionId, request, waited) {
-    const rows = request.services.map((s) => [
-        s.step_id,
-        s.service_slug,
-        s.service_owner_name ?? request.default_service_owner ?? '',
-    ]);
+async function writeOrchestrationSummary(executionId, request, waited, finalStatus) {
+    const byId = new Map((finalStatus?.steps ?? []).map((s) => [s.step_id, s]));
+    // Every cell below is caller-supplied and would reach the summary as raw HTML
+    // unless escaped here (see escapeHtml).
+    const rows = request.services.map((s) => {
+        const cells = [
+            s.step_id,
+            s.service_slug,
+            s.service_owner_name ?? request.default_service_owner ?? '',
+            conditionCell(s),
+        ];
+        if (waited)
+            cells.push(statusCell(byId.get(s.step_id)));
+        return cells.map(escapeHtml);
+    });
+    const header = [
+        { data: 'step_id', header: true },
+        { data: 'service_slug', header: true },
+        { data: 'owner', header: true },
+        { data: 'condition', header: true },
+    ];
+    if (waited)
+        header.push({ data: 'status', header: true });
+    const overview = [
+        ['Execution ID', executionId],
+        ['Execution Mode', request.execution_mode],
+        ['Steps', request.services.length.toString()],
+        ['Waited for Completion', waited ? 'Yes' : 'No (fire-and-forget)'],
+    ];
+    if (finalStatus) {
+        overview.push(['Execution Status', finalStatus.status]);
+        overview.push(['Excluded Steps', String(finalStatus.excluded_steps ?? 0)]);
+    }
     await core.summary
         .addHeading('Zekt Orchestration')
         .addTable([
@@ -30475,20 +30644,10 @@ async function writeOrchestrationSummary(executionId, request, waited) {
             { data: 'Property', header: true },
             { data: 'Value', header: true },
         ],
-        ['Execution ID', executionId],
-        ['Execution Mode', request.execution_mode],
-        ['Steps', request.services.length.toString()],
-        ['Waited for Completion', waited ? 'Yes' : 'No (fire-and-forget)'],
+        ...overview.map((row) => row.map(escapeHtml)),
     ])
         .addHeading('Steps', 3)
-        .addTable([
-        [
-            { data: 'step_id', header: true },
-            { data: 'service_slug', header: true },
-            { data: 'owner', header: true },
-        ],
-        ...rows,
-    ])
+        .addTable([header, ...rows])
         .addRaw('<hr>')
         .addRaw('_Sent via [Zekt Action](https://github.com/zekt-dev-org/zekt-action)_')
         .write();

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-11-10
+
+Orchestration step conditions (spec 162). A step may be included or excluded before anything is dispatched. The backend decides; this release is about carrying the fields and reporting the result.
+
+### Added
+- **Step conditions** — a `services[]` step may carry `condition` (a JSON boolean the GitHub runner has already evaluated; write the expression **unquoted**) and `condition_description` (display-only, max 200 chars). Both are forwarded verbatim and decided by the backend.
+- New outputs with `wait: true`: `step_{step_id}_status` (`completed` | `excluded` | `failed` | `skipped` | `timed_out`) for every step, and `excluded_steps` (always written, `0` when none). An excluded step writes no `step_{step_id}_outputs_*`, which until now was indistinguishable from a step that ran and reported nothing.
+- One info line per excluded step, naming the step that excluded it in a cascade. Exclusion is never a warning or an error and never changes the exit code.
+- On a fire-and-forget run whose every step was excluded, a line saying nothing was sent.
+- Job summary: a `condition` column, and a `status` column when the action waited (`excluded (by <step>)` for a cascade).
+- A warning when the backend ignored the submitted `condition` fields entirely — i.e. a backend that predates conditions, where every step ran.
+- Hints for the two mistakes only the action can see: a `condition` whose expression rendered to nothing (invalid JSON, so the payload never reaches the backend), and a quoted `"${{ … }}"` that the backend refuses as a string.
+- `timeout_minutes` and `input_schema_version` are now declared on `OrchestrationStep`. They were already forwarded; only the type was missing.
+
+### Changed
+- **A failed or timed-out orchestration now writes a job summary.** `pollUntilTerminal` returns the terminal status response and the summary is written before the run is failed; previously the throw came first, so no summary was written at all for the one case where it is most wanted. The run still fails, with the same error and exit code.
+- Every caller-supplied job-summary cell is HTML-escaped. `core.summary.addTable` does not escape cell text, and the new `condition` column carries free text.
+- User-agent bumped to `zekt-action/3.3.0`.
+
+### Notes
+- `condition` is **not** validated client-side: the backend refuses a non-boolean with an error naming the step, and a copy of that rule here would refuse plans a later backend accepts. The rule this follows — validate on the client only what the backend cannot report back — is written up in `specs/162-orchestration-step-conditions/README.md`.
+- Backward compatible: `condition` is opt-in and absent means included, so an existing plan behaves exactly as before.
+
 ## [3.2.0] - 2026-09-10
 
 ### Added

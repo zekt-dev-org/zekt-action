@@ -60,6 +60,11 @@ outputs:
     description: 'Orchestration execution ID returned by the Zekt backend. Only set when orchestrate: true.'
   execution_status:
     description: 'Terminal status of the orchestration: completed | failed | timed_out. Only set when orchestrate: true AND wait: true.'
+  excluded_steps:
+    description: >
+      Number of steps excluded by their conditions (spec 162), as a string.
+      Only set when orchestrate: true AND wait: true, where it is always written
+      ("0" when nothing was excluded) so a workflow expression can rely on it.
 
 runs:
   using: 'node24'
