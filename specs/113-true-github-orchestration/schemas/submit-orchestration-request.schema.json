@@ -51,7 +51,7 @@
       "properties": {
         "step_id": {
           "type": "string",
-          "description": "Consumer-assigned identifier for this step. Must be unique within the request. Used in depends_on references and in ${{ steps.STEP_ID.outputs.FIELD }} template expressions in later steps. Never uses the service_slug — this is a caller-defined logical name.",
+          "description": "Consumer-assigned identifier for this step. Must be unique within the request. Used in depends_on references and in $zekt{{ steps.STEP_ID.outputs.FIELD }} template expressions in later steps. Never uses the service_slug — this is a caller-defined logical name.",
           "minLength": 1,
           "maxLength": 64,
           "pattern": "^[a-zA-Z0-9_-]+$"
@@ -113,7 +113,7 @@
         },
         "input": {
           "type": "object",
-          "description": "Arbitrary input payload for this step. Passed verbatim to the target service workflow via repository_dispatch client_payload.input. String values may contain ${{ steps.STEP_ID.outputs.FIELD }} template expressions; these are resolved by the Zekt backend at dispatch time after the referenced step has completed. Dot-notation paths are supported: ${{ steps.STEP_ID.outputs.a.b.c }}.",
+          "description": "Arbitrary input payload for this step. Passed verbatim to the target service workflow via repository_dispatch client_payload.input. String values may contain $zekt{{ steps.STEP_ID.outputs.FIELD }} template expressions; these are resolved by the Zekt backend at dispatch time after the referenced step has completed. Dot-notation paths are supported: $zekt{{ steps.STEP_ID.outputs.a.b.c }}. The $zekt prefix is required: a plain ${{ … }} is GitHub expression syntax, so the consumer's runner evaluates it before zekt-action reads the payload, and because a step id here names a Zekt step rather than a GitHub workflow step it resolves to an empty string, silently.",
           "additionalProperties": true,
           "$comment": "Max serialized size: 256 KB. Validated against the target service's registered schema (if any) at submission time (pre-template) and again at dispatch time (post-template)."
         }
@@ -136,7 +136,7 @@
           "requested_by": "dev-team-a",
           "depends_on": ["create-sub"],
           "input": {
-            "subscription_id": "${{ steps.create-sub.outputs.subscription_id }}",
+            "subscription_id": "$zekt{{ steps.create-sub.outputs.subscription_id }}",
             "name": "rg-prod",
             "location": "eastus"
           }
@@ -163,7 +163,7 @@
           "service_owner_name": "platform-team-org",
           "requested_by": "dev-team-a",
           "depends_on": ["create-sub"],
-          "input": { "subscription_id": "${{ steps.create-sub.outputs.subscription_id }}" }
+          "input": { "subscription_id": "$zekt{{ steps.create-sub.outputs.subscription_id }}" }
         },
         {
           "step_id": "create-kv",
@@ -171,7 +171,7 @@
           "service_owner_name": "platform-team-org",
           "requested_by": "dev-team-a",
           "depends_on": ["create-rg"],
-          "input": { "resource_group": "${{ steps.create-rg.outputs.resource_group_name }}" }
+          "input": { "resource_group": "$zekt{{ steps.create-rg.outputs.resource_group_name }}" }
         }
       ]
     },
@@ -190,7 +190,7 @@
           "step_id": "create-rg",
           "service_slug": "new-azure-resource-group",
           "depends_on": ["create-sub"],
-          "input": { "subscription_id": "${{ steps.create-sub.outputs.subscription_id }}" }
+          "input": { "subscription_id": "$zekt{{ steps.create-sub.outputs.subscription_id }}" }
         }
       ]
     },
@@ -209,7 +209,7 @@
           "service_slug": "post-slack-message",
           "service_owner_name": "internal-tools-org",
           "depends_on": ["create-sub"],
-          "input": { "channel": "#platform", "message": "New sub: ${{ steps.create-sub.outputs.subscription_id }}" }
+          "input": { "channel": "#platform", "message": "New sub: $zekt{{ steps.create-sub.outputs.subscription_id }}" }
         }
       ]
     }

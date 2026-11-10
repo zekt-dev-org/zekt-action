@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Documentation: cross-step output references now show the required `$zekt` prefix.** The request schema and the README orchestration examples wrote them as `${{ steps.X.outputs.Y }}`, which is GitHub expression syntax: the consumer's runner evaluates it inside the `with:` block before this action reads the payload, and since a step id in a plan names a Zekt step rather than a GitHub workflow step, it resolves to an empty string. Anyone copying those examples submitted a plan carrying `""` with no error anywhere. Both now use `$zekt{{ … }}`, and the schema's `input` description says why the prefix is required.
+- **New README section "Cross-Step Output References"**, which is the anchor the action's own `${{ steps.… }}` warning has always linked to (`#cross-step-output-references`) and which did not exist, so the warning landed at the top of the page. It also records that the warning cannot catch the inline case, because the runner has already consumed the expression by then.
+- References to this action's own outputs (`${{ steps.zekt.outputs.execution_id }}`) are unchanged: those are genuine GitHub step references and keep the plain prefix.
+
 ## [3.3.0] - 2026-11-10
 
 Orchestration step conditions (spec 162). A step may be included or excluded before anything is dispatched. The backend decides; this release is about carrying the fields and reporting the result.

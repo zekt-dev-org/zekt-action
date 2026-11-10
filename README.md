@@ -194,7 +194,7 @@ When `orchestrate: true`, the `payload` input must be a JSON object with a `serv
       "service_slug": "new-azure-resource-group",
       "depends_on": ["create-sub"],
       "input": {
-        "subscription_id": "${{ steps.create-sub.outputs.subscription_id }}"
+        "subscription_id": "$zekt{{ steps.create-sub.outputs.subscription_id }}"
       }
     },
     {
@@ -202,7 +202,7 @@ When `orchestrate: true`, the `payload` input must be a JSON object with a `serv
       "service_slug": "new-azure-keyvault",
       "depends_on": ["create-rg"],
       "input": {
-        "resource_group": "${{ steps.create-rg.outputs.resource_group_name }}"
+        "resource_group": "$zekt{{ steps.create-rg.outputs.resource_group_name }}"
       }
     }
   ]
@@ -226,7 +226,7 @@ When `orchestrate: true`, the `payload` input must be a JSON object with a `serv
 |-------|----------|-------------|
 | `step_id` | ✅ Yes | Unique caller-defined name (`^[a-zA-Z0-9_-]+$`, max 64 chars). Used in `depends_on` and output references. |
 | `service_slug` | ✅ Yes | Immutable machine-readable service identifier (`^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$`). The only field used for routing — the human-readable name is never used. |
-| `input` | ✅ Yes | Arbitrary JSON object passed to the target service. String values may contain `${{ steps.STEP_ID.outputs.FIELD }}` expressions — resolved by Zekt at dispatch time, **not** by this action. |
+| `input` | ✅ Yes | Arbitrary JSON object passed to the target service. String values may contain `$zekt{{ steps.STEP_ID.outputs.FIELD }}` references to an earlier step's output — resolved by Zekt at dispatch time, **not** by this action. The `$zekt` prefix is required: see [Cross-Step Output References](#cross-step-output-references). |
 | `service_owner_name` | See note | GitHub org name of the service owner. Overrides `default_service_owner` for this step. |
 | `requested_by` | No | Informational team name (max 256 chars). Never used for auth or routing. |
 | `depends_on` | No | Array of `step_id` values that must complete before this step is dispatched. Omit for linear chains — Zekt infers sequential ordering automatically. |
@@ -236,6 +236,39 @@ When `orchestrate: true`, the `payload` input must be a JSON object with a `serv
 > **`condition` and `condition_description` are optional and opt-in.** A plan that omits them runs exactly as it did
 > on v3.2.0: the same request body, the same outputs, the same exit code, and a job summary with no `condition`
 > column. Nothing about conditions appears until a step carries one.
+
+### Cross-Step Output References
+
+A step's `input` can use an earlier step's output. Write it with the **`$zekt` prefix**:
+
+```json
+{ "step_id": "create-rg", "depends_on": ["create-sub"],
+  "input": { "subscription_id": "$zekt{{ steps.create-sub.outputs.subscription_id }}" } }
+```
+
+**Why the prefix.** `${{ … }}` is GitHub's own expression syntax, and GitHub evaluates it **inside your `with:`
+block, before this action runs**. The step ids in an orchestration plan are Zekt steps, not GitHub workflow steps, so
+there is nothing for GitHub to resolve — it substitutes an **empty string** and the plan reaches Zekt with
+`"subscription_id": ""`. Nothing errors; the step is dispatched with a blank value and fails later, somewhere that
+looks unrelated.
+
+`$zekt{{ … }}` is not valid GitHub syntax, so the runner leaves it alone. It arrives intact, and Zekt resolves it at
+dispatch time once the referenced step has reported. Dot paths work: `$zekt{{ steps.STEP_ID.outputs.a.b.c }}`.
+
+| Where you are writing | Form | Who resolves it |
+|---|---|---|
+| Inside the orchestration `payload`, referring to a **Zekt step** | `$zekt{{ steps.X.outputs.Y }}` | Zekt, at dispatch time |
+| In your workflow, referring to a **GitHub step** (including this action's own outputs) | `${{ steps.zekt.outputs.execution_id }}` | the GitHub runner |
+
+Both forms are correct in their own place — `${{ steps.zekt.outputs.… }}` is how you read this action's outputs, and
+it must keep the plain prefix.
+
+> ⚠️ The action warns if it finds a literal `${{ steps.… }}` in a step input, but it can only see what survives the
+> runner. In the common case — the expression written inline in `payload:` — GitHub has already replaced it with an
+> empty string, so there is nothing left to warn about. Getting the prefix right is the only protection.
+>
+> A reference also creates a dependency for [step conditions](#step-conditions): excluding a step excludes anything
+> that reads its outputs, whether or not `depends_on` says so.
 
 ### Usage Examples
 
@@ -268,7 +301,7 @@ jobs:
                   "service_slug": "new-azure-resource-group",
                   "depends_on": ["create-sub"],
                   "input": {
-                    "subscription_id": "${{ steps.create-sub.outputs.subscription_id }}"
+                    "subscription_id": "$zekt{{ steps.create-sub.outputs.subscription_id }}"
                   }
                 }
               ]
@@ -301,7 +334,7 @@ jobs:
                   "service_slug": "new-azure-resource-group",
                   "depends_on": ["create-sub"],
                   "input": {
-                    "subscription_id": "${{ steps.create-sub.outputs.subscription_id }}"
+                    "subscription_id": "$zekt{{ steps.create-sub.outputs.subscription_id }}"
                   }
                 }
               ]
@@ -334,7 +367,7 @@ jobs:
                   "service_owner_name": "networking-team-org",
                   "depends_on": ["create-sub"],
                   "input": {
-                    "subscription_id": "${{ steps.create-sub.outputs.subscription_id }}"
+                    "subscription_id": "$zekt{{ steps.create-sub.outputs.subscription_id }}"
                   }
                 }
               ]
@@ -530,7 +563,7 @@ jobs:
             }
 ```
 
-The fields you put in `payload` become the step's outputs in the orchestration — available as `${{ steps.create-sub.outputs.subscription_id }}` in any downstream step's `input` on the consumer side.
+The fields you put in `payload` become the step's outputs in the orchestration — available as `$zekt{{ steps.create-sub.outputs.subscription_id }}` in any downstream step's `input` on the consumer side. (The `${{ steps.work.outputs.… }}` above is a plain GitHub reference to this workflow's own step, which is correct here — see [Cross-Step Output References](#cross-step-output-references).)
 
 #### Supporting both orchestrated and direct dispatches
 
