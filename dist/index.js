@@ -29933,7 +29933,7 @@ exports.submitOrchestration = submitOrchestration;
 exports.getOrchestrationStatus = getOrchestrationStatus;
 const http_client_1 = __nccwpck_require__(4844);
 function makeClient() {
-    return new http_client_1.HttpClient('zekt-action/3.3.0');
+    return new http_client_1.HttpClient('zekt-action/3.3.1');
 }
 function authHeaders(oidcToken, repository) {
     return {

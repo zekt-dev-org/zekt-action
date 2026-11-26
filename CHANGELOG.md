@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.1] - 2026-11-26
+
 ### Fixed
 - **`wait: true` stops on a cancelled orchestration.** Core reports `cancelled` as a terminal status, and the action's set lacked it, so a cancelled orchestration was polled every 30 seconds until GitHub's 6-hour job timeout, on the workflow's Actions minutes. The run now ends, writes its summary, and fails with `Orchestration ended with status: cancelled`; `execution_status` can be `cancelled`. The set lives in `src/terminal-statuses.ts` and is tested against a copy of Core's contract fixture (`__tests__/fixtures/orchestration-terminal-statuses.json`).
 - **Documentation: cross-step output references now show the required `$zekt` prefix.** The request schema and the README orchestration examples wrote them as `${{ steps.X.outputs.Y }}`, which is GitHub expression syntax: the consumer's runner evaluates it inside the `with:` block before this action reads the payload, and since a step id in a plan names a Zekt step rather than a GitHub workflow step, it resolves to an empty string. Anyone copying those examples submitted a plan carrying `""` with no error anywhere. Both now use `$zekt{{ … }}`, and the schema's `input` description says why the prefix is required.
