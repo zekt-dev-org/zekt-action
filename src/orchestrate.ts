@@ -10,10 +10,10 @@ import {
   OrchestrationStepStatus,
 } from './types';
 import { submitOrchestration, getOrchestrationStatus } from './api-client';
+import { TERMINAL_STATUSES } from './terminal-statuses';
 
 const STEP_ID_RE = /^[a-zA-Z0-9_-]+$/;
 const SERVICE_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/;
-const TERMINAL_STATUSES = new Set(['completed', 'failed', 'timed_out']);
 const POLL_INTERVAL_MS = 30_000;
 
 // Pattern to detect GitHub Actions step references that get evaluated on the runner

@@ -157,7 +157,7 @@ export interface OrchestrationStepStatus {
 
 export interface OrchestrationStatusResponse {
   execution_id: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'timed_out';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'timed_out' | 'cancelled';
   steps: OrchestrationStepStatus[];
   // spec 162: present only when at least one step was excluded.
   excluded_steps?: number;

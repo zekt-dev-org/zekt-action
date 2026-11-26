@@ -30261,9 +30261,9 @@ exports.runOrchestration = runOrchestration;
 const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
 const api_client_1 = __nccwpck_require__(7475);
+const terminal_statuses_1 = __nccwpck_require__(8846);
 const STEP_ID_RE = /^[a-zA-Z0-9_-]+$/;
 const SERVICE_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$/;
-const TERMINAL_STATUSES = new Set(['completed', 'failed', 'timed_out']);
 const POLL_INTERVAL_MS = 30_000;
 // Pattern to detect GitHub Actions step references that get evaluated on the runner
 // before zekt-action ever sees them — these should use $zekt{{ steps.… }} instead.
@@ -30573,7 +30573,7 @@ async function pollUntilTerminal(apiUrl, oidcToken, repository, executionId, req
     while (true) {
         const statusResponse = await (0, api_client_1.getOrchestrationStatus)(apiUrl, oidcToken, repository, executionId);
         const status = statusResponse.status;
-        if (TERMINAL_STATUSES.has(status)) {
+        if (terminal_statuses_1.TERMINAL_STATUSES.has(status)) {
             core.setOutput('execution_status', status);
             const steps = statusResponse.steps ?? [];
             // Write each step's outputs as step_{step_id}_outputs_{field}=value
@@ -30810,6 +30810,26 @@ async function encryptPayload(payload, consumerKeys) {
     core.info(`✅ Shield envelope created with ${Object.keys(recipients).length} recipient(s)`);
     return envelope;
 }
+
+
+/***/ }),
+
+/***/ 8846:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.TERMINAL_STATUSES = void 0;
+/**
+ * The orchestration execution statuses that end a `wait: true` poll: every status Core treats as terminal.
+ *
+ * Core's set is the contract fixture `__tests__/fixtures/orchestration-terminal-statuses.json`, a byte-identical copy
+ * of zektMainWeb's `backend/api/CustomerApi.Tests/Contracts/orchestration-terminal-statuses.json`, and
+ * `__tests__/terminal-statuses.test.ts` keeps this set equal to it. The poll has no bound of its own, so a terminal
+ * status missing here keeps a run polling until GitHub's job timeout, on the customer's minutes.
+ */
+exports.TERMINAL_STATUSES = new Set(['completed', 'failed', 'timed_out', 'cancelled']);
 
 
 /***/ }),

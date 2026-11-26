@@ -66,7 +66,7 @@ jobs:
 | `status` | `orchestrate: false` | `success` or `failed` |
 | `consumers-notified` | `orchestrate: false` | Number of consumers that will receive the event |
 | `execution_id` | `orchestrate: true` | Orchestration execution ID (e.g. `exec-{uuid}`) |
-| `execution_status` | `orchestrate: true` + `wait: true` | Terminal status: `completed` \| `failed` \| `timed_out` |
+| `execution_status` | `orchestrate: true` + `wait: true` | Terminal status: `completed` \| `failed` \| `timed_out` \| `cancelled` |
 | `step_{step_id}_outputs_{field}` | `orchestrate: true` + `wait: true` | Individual step output values |
 | `step_{step_id}_status` | `orchestrate: true` + `wait: true` | Terminal status of that step: `completed` \| `excluded` \| `failed` \| `skipped` \| `timed_out` |
 | `excluded_steps` | `orchestrate: true` + `wait: true` | Number of steps excluded by their conditions. Always written — `0` when none were |
@@ -319,7 +319,7 @@ jobs:
         uses: zekt-dev-org/zekt-action@v3
         with:
           orchestrate: true
-          wait: true          # Block until completed | failed | timed_out
+          wait: true          # Block until completed | failed | timed_out | cancelled
           payload: |
             {
               "default_service_owner": "platform-team-org",

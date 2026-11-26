@@ -1,0 +1,4 @@
+{
+  "description": "The orchestration execution statuses Core treats as terminal (OrchestrationService.IsExecutionTerminal). zekt-action keeps a byte-identical copy in __tests__/fixtures/ and stops polling on each. docs/decisions/orchestration.md, KP-ACTION-10.",
+  "terminal": ["cancelled", "completed", "failed", "timed_out"]
+}
